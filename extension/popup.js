@@ -40,11 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     const ALL_MODELS = {
-        'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', tip: '最高品質，適合複雜推理任務。' },
-        'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', tip: '效能與速度的平衡點。' },
-        'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash-Lite', tip: '速度極快，適合高頻率即時回應。' },
-        'gemini-2.0-flash': { name: 'Gemini 2.0 Flash', tip: '舊版高速模型。' },
-        'gemini-2.0-flash-lite': { name: 'Gemini 2.0 Flash-Lite', tip: '舊版最快模型。' }
+        // 更新模型列表，納入 3.0 Pro 與 Flash-Lite，並更新 Tip 描述以反映新的配額現實
+        'gemini-3-pro-preview': { name: 'Gemini 3.0 Pro (Preview)', tip: '（需付費）最新最強模型，適合複雜推理 (每日限量)。' },
+        'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', tip: '（需付費）穩定高品質主力，適合長句翻譯。' },
+        'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', tip: '免費但每日額度極低 (20 RPD)，將作為優先衝鋒模型。' },
+        'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash-Lite', tip: '極速輕量版，適合快速瀏覽。' },
+        'gemini-2.0-flash-exp': { name: 'Gemini 2.0 Flash (Exp)', tip: '（需付費）實驗性模型，額度通常較高。' },
+        'gemini-2.0-flash': { name: 'Gemini 2.0 Flash', tip: '（需付費）舊版高速模型 (備用)。' },
+        'gemini-2.0-flash-lite': { name: 'Gemini 2.0 Flash-Lite', tip: '（需付費）舊版最快模型 (備用)。' }
     };
 
     const NEW_LANGUAGE_PROMPT_TEMPLATE = `**風格指南:**
@@ -984,7 +987,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         
-        // 【關鍵修正點】: 移除 loadAvailableLangs(); 函式呼叫
         // HQS 開關事件監聽 START
         const hqsToggle = document.getElementById('hqsToggleJa');
         if (hqsToggle) {
