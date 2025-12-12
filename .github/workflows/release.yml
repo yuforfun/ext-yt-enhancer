@@ -1,6 +1,5 @@
 name: Auto Release Zip
 
-# 觸發時機：當你推送 (push) 一個開頭是 'v' 的標籤 (tag) 時
 on:
   push:
     tags:
@@ -19,16 +18,12 @@ jobs:
 
       - name: Create Zip File
         run: |
-          # 使用 zip 指令打包
-          # -r: 遞迴處理
-          # -x: 排除清單 (這裡加入了 lab.js, lab.html 以及原本的雜物)
-          
-          zip -r YouTube_Subtitle_Extension_${{ github.ref_name }}.zip . -x "*.git*" ".github/*" ".vscode/*" "docs/*" "node_modules/*" "*.DS_Store" "package-lock.json" "package.json" "*.test.js" "lab.js" "lab.html" "README.md"
+          # 修正版：在 lab.js 和 lab.html 前加上 * 以確保路徑匹配
+          zip -r YouTube_Subtitle_Extension_${{ github.ref_name }}.zip . -x "*.git*" ".github/*" ".vscode/*" "docs/*" "node_modules/*" "*.DS_Store" "package-lock.json" "package.json" "*.test.js" "*lab.js" "*lab.html" "README.md"
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          # 上傳的檔案名稱也要對應修改
           files: YouTube_Subtitle_Extension_${{ github.ref_name }}.zip
           generate_release_notes: true
         env:
