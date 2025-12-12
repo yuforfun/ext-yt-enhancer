@@ -346,7 +346,6 @@ class YouTubeSubtitleEnhancer {
 
     async onMessageFromBackground(request, sender, sendResponse) {
         // 功能: 監聽來自 background.js 和 popup.js 的訊息。
-        // 【關鍵修正點】: 移除了 'getAvailableLangsFromContent' 的 if 區塊。
         if (request.action === 'settingsChanged') {
             this._log('收到設定變更通知，正在更新...');
             const oldIsEnabled = this.settings.isEnabled;
@@ -1096,7 +1095,7 @@ class YouTubeSubtitleEnhancer {
         // input: 無 (從 this.state.translatedTrack 讀取)
         // output: (遞迴呼叫) 或 (觸發錯誤 UI)
         // 其他補充: 在 3 個流程終點新增 this.state.isProcessing = false;
-        const BATCH_SIZE = 25;
+        const BATCH_SIZE = 40; 
         const segmentsToTranslate = [];
         const indicesToUpdate = [];
         for (let i = 0; i < this.state.translatedTrack.length; i++) {
@@ -1196,7 +1195,6 @@ class YouTubeSubtitleEnhancer {
                 this.handleTranslationError(e.message);
             }
         }
-        // 【關鍵修正點】: 結束
     }
 
     handleCriticalFailure(source, message, data = {}) {

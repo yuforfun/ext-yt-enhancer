@@ -70,15 +70,68 @@ const DEFAULT_CUSTOM_PROMPTS = {
 `,
 };
 
+// 新增斷路器類別，負責管理 RPM (60s) 與 RPD (24h) 的冷卻狀態
+class CircuitBreaker {
+    constructor() {
+        this.state = new Map(); // Key: "keyId::modelId", Value: timestamp (cooldown until)
+        this.loadFromStorage();
+    }
+
+    async loadFromStorage() {
+        try {
+            const result = await chrome.storage.session.get({ 'circuitBreakerState': {} });
+            // 將 Object 轉換回 Map
+            for (const [k, v] of Object.entries(result.circuitBreakerState)) {
+                if (v > Date.now()) { // 只載入尚未過期的冷卻
+                    this.state.set(k, v);
+                }
+            }
+        } catch (e) {
+            console.error('[CircuitBreaker] Load failed:', e);
+        }
+    }
+
+    async saveToStorage() {
+        try {
+            const obj = Object.fromEntries(this.state);
+            await chrome.storage.session.set({ 'circuitBreakerState': obj });
+        } catch (e) {
+            console.error('[CircuitBreaker] Save failed:', e);
+        }
+    }
+
+    getUniqueId(keyId, modelId) {
+        return `${keyId}::${modelId}`;
+    }
+
+    isOpen(keyId, modelId) {
+        const uid = this.getUniqueId(keyId, modelId);
+        const cooldownUntil = this.state.get(uid);
+        // 如果冷卻時間存在且大於現在，代表斷路器開啟 (Open/Tripped) -> 不可用
+        if (cooldownUntil && cooldownUntil > Date.now()) {
+            return { isOpen: true, remaining: Math.ceil((cooldownUntil - Date.now()) / 1000) };
+        }
+        return { isOpen: false, remaining: 0 };
+    }
+
+    trip(keyId, modelId, penaltyMs) {
+        const uid = this.getUniqueId(keyId, modelId);
+        const until = Date.now() + penaltyMs;
+        this.state.set(uid, until);
+        this.saveToStorage(); // 非同步寫入，不阻塞主流程
+    }
+}
+// Session Storage 鍵值，用於儲存 Key 黏著性
+const LAST_SUCCESSFUL_KEY_ID = 'lastSuccessfulKeyId';
+// 初始化全域實例
+const globalCircuitBreaker = new CircuitBreaker();
+
 const sessionData = {
 // 功能: 一個在記憶體中運行的全域變數，用於儲存與特定分頁 (Tab) 相關的臨時資料。
 //      它會在瀏覽器關閉時被清除。
 // input: 由 content.js 和 injector.js 寫入。
 // output: 供 content.js 和 popup.js 讀取。
 // 其他補充: lastPlayerData 作為一個「信箱」，解決了 injector.js 和 content.js 之間因載入時序不同而造成的通訊問題。
-// 【關鍵修正點】: 移除 availableLangs: {}
-// 【關鍵修正點】: 移除 lastPlayerData: {},
-// 【關鍵修正點】: 移除 sessionCache: {}
 };
 
 
@@ -92,7 +145,8 @@ const defaultSettings = {
     fontSize: 22,
     fontFamily: 'Microsoft JhengHei, sans-serif',
     models_preference: [
-        "gemini-2.5-pro"
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
     ],
     showOriginal: true,
     showTranslated: true,
@@ -169,290 +223,140 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         
         
         case 'translateBatch':
-            // 功能: 接收、翻譯批次文字，並回傳結構化的成功或失敗回應。
-            // input: request.texts (字串陣列), request.source_lang (字串), 
-            //        request.models_preference (字串陣列), 
-            //        request.overridePrompt (可選, 字串)
-            // output: (成功) { data: [...] }
-            //         (失敗) { error: 'TEMPORARY_FAILURE', retryDelay: X }
-            //         (失敗) { error: 'PERMANENT_FAILURE', message: '...' }
-            //         (失敗) { error: 'BATCH_FAILURE', message: '...' }
-            // 其他補充: 實作金鑰/模型迴圈、冷卻機制，以及智慧錯誤分類。
-            // 其他補充: 支援 overridePrompt 的「完整 Prompt 覆蓋」模式。
-            isAsync = true; 
-            
+            // 功能: 容錯翻譯處理器
+            // 邏輯: 雙重迴圈 (Model -> Key) + CircuitBreaker + 智慧錯誤解析
+            isAsync = true;
+
             (async () => {
-                let errorStats = { temporary: 0, permanent: 0, batch: 0, totalAttempts: 0 };
-                let keysInCooldown = 0;
-                let shortestRetryDelay = API_KEY_COOLDOWN_SECONDS + 1; 
-
-                const now = Date.now();
-                const cooldownResult = await chrome.storage.session.get({ 'apiKeyCooldowns': {} });
-                const cooldowns = cooldownResult.apiKeyCooldowns;
-                let cooldownsUpdated = false; 
-
-                const { texts, source_lang, models_preference, overridePrompt } = request; 
+                const { texts, source_lang, models_preference, overridePrompt } = request;
+                
+                // 1. 基礎檢查
                 if (!texts || texts.length === 0) {
                     sendResponse({ data: [] });
                     return;
                 }
-
-                // 1. 獲取金鑰
                 const keyResult = await chrome.storage.local.get(['userApiKeys']);
-                const apiKeys = keyResult.userApiKeys || []; 
-
-                if (apiKeys.length === 0) { 
-                    await writeToLog('ERROR', '翻譯失敗：未設定 API Key', null, '請至「診斷與日誌」分頁新增您的 API Key。'); 
-                    sendResponse({ error: 'PERMANENT_FAILURE', message: '翻譯失敗：未設定 API Key。' }); 
+                let apiKeys = keyResult.userApiKeys || [];
+                if (apiKeys.length === 0) {
+                    await writeToLog('ERROR', '翻譯失敗：未設定 API Key');
+                    sendResponse({ error: 'PERMANENT_FAILURE', message: '未設定 API Key' });
                     return;
                 }
+                
+                // 金鑰黏著性：將上一次成功的 Key 移到最前面
+                apiKeys = await reorderKeysByStickiness(apiKeys); 
 
-                // 2. 組合 Prompt
+                // 2. 準備 Prompt
                 let fullPrompt;
                 if (overridePrompt) {
-                    // 情境 1: 請求來自 lab.js (開發者測試)
-                    // overridePrompt 已是 "完整" Prompt，我們只需替換 JSON
                     const jsonInputText = JSON.stringify(texts);
                     fullPrompt = overridePrompt.replace('{json_input_text}', jsonInputText);
                 } else {
-                    // 情境 2: 請求來自 content.js (正式翻譯)
-                    
-                    const sourceLangName = LANG_MAP[source_lang] || '原文'; 
-                    const corePrompt = DEFAULT_CORE_PROMPT_TEMPLATE.replace(/{source_lang}/g, sourceLangName); 
-                    
+                    const sourceLangName = LANG_MAP[source_lang] || '原文';
+                    const corePrompt = DEFAULT_CORE_PROMPT_TEMPLATE.replace(/{source_lang}/g, sourceLangName);
                     const settingsResult = await chrome.storage.local.get(['ytEnhancerSettings']);
                     const settings = settingsResult.ytEnhancerSettings || {};
                     const tier2List = settings.auto_translate_priority_list || [];
                     const langConfig = tier2List.find(item => item.langCode === source_lang);
                     const customPromptPart = langConfig ? langConfig.customPrompt : "";
-                    
                     const jsonInputText = JSON.stringify(texts);
-                    
                     fullPrompt = `${customPromptPart}\n\n${corePrompt.replace('{json_input_text}', jsonInputText)}`;
                 }
-                
+
                 const requestBody = {
-                "contents": [
-                    { "parts": [ { "text": fullPrompt } ] }
-                ],
-                "generationConfig": {
-                    "responseMimeType": "application/json"
-                },
-                "safetySettings": SAFETY_SETTINGS
+                    "contents": [{ "parts": [{ "text": fullPrompt }] }],
+                    "generationConfig": { "responseMimeType": "application/json" },
+                    "safetySettings": SAFETY_SETTINGS
                 };
 
-                // 3. 執行「金鑰-模型」雙重迴圈
-                for (const keyInfo of apiKeys) { 
+                let lastError = null;
+                let allKeysDeadToday = true;
+
+                // 3. 雙重迴圈 - Model 優先 (Outer), Key 後補 (Inner)
+                for (const modelName of models_preference) {
                     
-                    const keyId = keyInfo.id;
-                    const keyName = keyInfo.name || '未命名金鑰';
-                    const currentKey = keyInfo.key;
-                    const cooldownTimestamp = cooldowns[keyId];
+                    let anyKeyAliveForThisModel = false; 
 
-                    if (cooldownTimestamp && now < cooldownTimestamp + (API_KEY_COOLDOWN_SECONDS * 1000)) {
-                        keysInCooldown++;
-                        const remainingTime = Math.ceil((cooldownTimestamp + (API_KEY_COOLDOWN_SECONDS * 1000) - now) / 1000);
-                        if (remainingTime < shortestRetryDelay) {
-                            shortestRetryDelay = remainingTime; 
+                    for (const keyInfo of apiKeys) {
+                        const keyId = keyInfo.id;
+                        const keyName = keyInfo.name || '未命名';
+
+                        // 4. [Local Skip] 查表：檢查斷路器狀態
+                        const breakerStatus = globalCircuitBreaker.isOpen(keyId, modelName);
+                        if (breakerStatus.isOpen) {
+                            // console.log(`[Skip] Key: ${keyName} @ ${modelName} is cooling down (${breakerStatus.remaining}s)`);
+                            continue;
                         }
-                        
-                        await writeToLog('INFO', `金鑰 '${keyName}' 仍在冷卻中 (剩餘 ${remainingTime}秒)，已跳過。`);
-                        continue; 
-                    } else if (cooldownTimestamp) {
-                        delete cooldowns[keyId];
-                        cooldownsUpdated = true; 
-                    }
 
-                    for (const modelName of models_preference) { 
-                        
+                        anyKeyAliveForThisModel = true; 
+                        allKeysDeadToday = false; 
+
                         try {
-                            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, { 
+                            // 5. 發送請求
+                            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
                                 method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'x-goog-api-key': currentKey 
-                                },
+                                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyInfo.key },
                                 body: JSON.stringify(requestBody)
                             });
 
                             if (!response.ok) {
-                                let errorText = await response.text();
-                                throw new Error(`HTTP ${response.status}: ${errorText}`);
+                                const errorText = await response.text();
+                                // 將原始錯誤本文 (errorText) 輸出到 Console
+                                console.error(`[Gemini API Error - Key ${keyId}] 原始錯誤本文:`, errorText);
+                                throw new Error(`HTTP ${response.status}::${errorText}`);
                             }
 
                             const responseData = await response.json();
                             
                             const rawText = responseData.candidates[0].content.parts[0].text;
                             
-                            // 【關鍵修正點】: v4.1.3 (Iteration 4) - 增加偵錯日誌 1
-                            // console.log(`[v4.1.3 Debug] 來自 ${modelName} 的原始 rawText:`, rawText);
+                            const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+                            if (!jsonMatch) throw new Error('回應中找不到 JSON 陣列');
+                            
+                            const translatedList = JSON.parse(jsonMatch[0]);
 
-                            const startIndex = rawText.indexOf('[');
-                            const endIndex = rawText.lastIndexOf(']');
-                            
-                            let jsonText = null;
-                            if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-                                jsonText = rawText.substring(startIndex, endIndex + 1);
-                            }
-
-                            // 【關鍵修正點】: v4.1.3 (Iteration 4) - 增加偵錯日誌 2
-                            // console.log(`[v4.1.3 Debug] 提取的 jsonText:`, jsonText);
-
-                            if (!jsonText) {
-                                throw new Error('模型回傳內容中未找到有效的 JSON 陣列');
-                            }
-                            
-                            const translatedList = JSON.parse(jsonText);
-                            
-                            // 【關鍵修正點】: v4.1.3 (Iteration 4) - 增加偵錯日誌 3
-                            // console.log(`[v4.1.3 Debug] 解析的 List Length: ${translatedList.length}, 請求的 Length: ${texts.length}`);
-                            
-                            if (Array.isArray(translatedList) && translatedList.length === texts.length && translatedList.every(item => typeof item === 'string')) {
+                            if (Array.isArray(translatedList) && translatedList.length === texts.length) {
+                                // 成功！
+                                // 成功時，更新黏著性紀錄
+                                await chrome.storage.session.set({ [LAST_SUCCESSFUL_KEY_ID]: keyId }); 
                                 sendResponse({ data: translatedList });
                                 return; 
                             } else {
-                                // 【關鍵修正點】: v4.1.3 (Iteration 4) - 增加偵錯日誌 4 (在拋出錯誤前)
-                                console.error(`[v4.1.3 Debug] 陣列長度不符！`, { model: modelName, expected: texts.length, got: translatedList.length, list: translatedList });
-                                throw new Error('模型回傳格式錯誤 (陣列長度或型別不符)');
+                                throw new Error('BATCH_FAILURE::陣列長度不符');
                             }
 
                         } catch (e) {
-                            // v4.1.3 錯誤處理邏輯 (此邏輯是正確的)
-                            const errorStr = String(e.message).toLowerCase();
-                            errorStats.totalAttempts++;
-                            let httpCode = errorStr.match(/http (\d{3})/); 
-                            let reason = '';
-                            let userSolution = ''; 
-                            let logLevel = 'INFO'; 
-
-                            // 判斷 1: 【優先】暫時性模型/配額/伺服器錯誤 (Quota / 429 / 500 / 503 / 504)
-                            if (
-                                errorStr.includes('quota') || 
-                                (httpCode && ['429', '500', '503', '504'].includes(httpCode[1])) ||
-                                errorStr.includes('overloaded')
-                            ) {
-                                errorStats.temporary++; 
-                                
-                                if (errorStr.includes('quota') || (httpCode && httpCode[1] === '429')) {
-                                    reason = (httpCode && httpCode[1] === '429') ? '429 RESOURCE_EXHAUSTED' : 'quota';
-                                    userSolution = '已達速率限制 (RPM/RPS)。系統將自動嘗試備用模型/金鑰。若此問題頻繁發生，請考慮增加金鑰數量或升級帳戶。'; 
-                                    logLevel = 'WARN'; 
-                                
-                                } else if (httpCode && httpCode[1] === '500') {
-                                    reason = '500 INTERNAL';
-                                    userSolution = 'Google 伺服器內部錯誤 (可能因為 Prompt 內容過長，或包含了伺服器無法處理的特殊內容組合)。系統將自動嘗試備用模型。'; 
-                                    logLevel = 'WARN';
-                                
-                                } else if (httpCode && httpCode[1] === '503') {
-                                    reason = '503 UNAVAILABLE';
-                                    userSolution = 'Google 伺服器暫時過載或關閉。系統將自動嘗試備用模型，請耐心等候。'; 
-                                    logLevel = 'INFO';
-                                
-                                } else if (httpCode && httpCode[1] === '504') {
-                                    reason = '504 DEADLINE_EXCEEDED';
-                                    userSolution = 'Google 伺服器處理逾時 (可能 Prompt 過於複雜或過長)。系統將自動嘗試備用模型。'; 
-                                    logLevel = 'WARN';
-                                
-                                } else {
-                                    reason = 'overloaded';
-                                    userSolution = 'Google 伺服器過載。系統將自動嘗試備用模型，請耐心等候。';
-                                    logLevel = 'INFO';
-                                }
-
-                                await writeToLog(logLevel, `金鑰 '${keyName}' - 模型 '${modelName}' 遭遇暫時性錯誤 (${reason})。`, e.message, userSolution);
-                                
-                                continue; // 【關鍵行為】不冷卻金鑰，用同一個金鑰嘗試下一個模型
-
-                            // 判斷 2: 【其次】永久性金鑰錯誤 (Billing / Invalid Key / 403)
-                            } else if (errorStr.includes('billing') || errorStr.includes('api key not valid') || (httpCode && httpCode[1] === '403')) {
-                                errorStats.permanent++;
-                                logLevel = 'ERROR';
-                                
-                                if (errorStr.includes('billing')) {
-                                    reason = 'billing';
-                                    userSolution = '請檢查 Google AI Studio 的帳單設定，確認帳戶有效。'; 
-                                } else if (httpCode && httpCode[1] === '403') {
-                                    reason = '403 PERMISSION_DENIED';
-                                    userSolution = '金鑰權限不足。請確認金鑰已啟用，或未受 IP/HTTP 限制。'; 
-                                } else {
-                                    reason = 'api key not valid';
-                                    userSolution = '金鑰無效。請檢查金鑰是否複製正確或已遭停用。';
-                                }
-
-                                await writeToLog(logLevel, `金鑰 '${keyName}' 遭遇永久性錯誤 (${reason})，將冷卻 ${API_KEY_COOLDOWN_SECONDS} 秒。`, e.message, userSolution);
-                                
-                                cooldowns[keyId] = Date.now(); 
-                                await chrome.storage.session.set({ apiKeyCooldowns: cooldowns }); 
-
-                                break; // 【關鍵行為】放棄此金鑰
-
-                            // 判斷 3: 【最後】批次內容/格式錯誤 (400 / 404 / 其他)
-                            } else {
-                                errorStats.batch++;
-                                logLevel = 'WARN';
-
-                                if (httpCode && httpCode[1] === '400') {
-                                    reason = '400 INVALID_ARGUMENT';
-                                    userSolution = '請求格式錯誤 (可能 Prompt 觸發了安全機制或內容限制)。系統將嘗試備用模型。';
-                                } else if (errorStr.includes('未找到有效的 json 陣列')) { 
-                                    reason = 'Invalid JSON Response';
-                                    userSolution = '模型回傳的內容非標準 JSON 格式。系統將自動嘗試備用模型。';
-                                } else if (httpCode && httpCode[1] === '404') {
-                                    reason = '404 NOT_FOUND';
-                                    userSolution = `金鑰 '${keyName}' - 模型名稱 '${modelName}' 不存在或已棄用。系統將嘗試備用模型。`;
-                                } else {
-                                    reason = 'content/format error';
-                                    userSolution = '發生未知的內容或格式錯誤。系統將嘗試備用模型。'; 
-                                }
-
-                                await writeToLog(logLevel, `金鑰 '${keyName}' - 模型 '${modelName}' 呼叫失敗 (${reason})。`, e.message, userSolution); 
-                                
-                                continue; // 放棄此模型，嘗試下一個
+                            // 6. 錯誤解析與判刑
+                            const decision = parseErrorAndTrip(e, keyInfo, modelName);
+                            
+                            if (decision.penalty > 0) {
+                                globalCircuitBreaker.trip(keyId, modelName, decision.penalty);
                             }
+
+                            await writeToLog(decision.logLevel, decision.logMessage, decision.rawErrorContext, decision.userSolution);
+                            
+                            lastError = decision;
+                            continue;
                         }
                     } 
+
+                    if (!anyKeyAliveForThisModel) {
+                        // console.log(`[Model Skip] ${modelName} has no available keys.`);
+                    }
+
                 } 
 
-                // 5. 根據錯誤統計，回傳結構化錯誤
-                if (cooldownsUpdated) {
-                    await chrome.storage.session.set({ apiKeyCooldowns: cooldowns });
-                }
-                
-                if (keysInCooldown > 0 && keysInCooldown === apiKeys.length) {
-                    const retryDelay = shortestRetryDelay < 1 ? 1 : shortestRetryDelay; 
-                    await writeToLog('WARN', `所有金鑰均在冷卻中，將於 ${retryDelay} 秒後重試。`);
-                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: retryDelay }); 
-                    return; 
-                }
-
-                if (errorStats.temporary > 0) {
-                    const result = await chrome.storage.session.get({ 'errorLogs': [] });
-                    const lastTemporaryError = result.errorLogs[0]; 
-                    let retryDelay = 10; 
-                    
-                    if (lastTemporaryError && lastTemporaryError.context) {
-                        const match = lastTemporaryError.context.match(/retryDelay": "(\d+)/);
-                        if (match && match[1]) {
-                            retryDelay = parseInt(match[1], 10);
-                        }
-                    }
-                    await writeToLog('WARN', `所有金鑰/模型均暫時不可用，將於 ${retryDelay} 秒後重試。`);
-                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: retryDelay }); 
-
-                } else if (errorStats.permanent > 0 && errorStats.permanent === errorStats.totalAttempts) {
-                    await writeToLog('ERROR', '所有 API Key 均失效 (Billing/Invalid)。', '翻譯流程已停止。', '請檢查並更換您的 API Key。');
-                    sendResponse({ error: 'PERMANENT_FAILURE', message: '所有 API Key 均失效 (Billing/Invalid)。' }); 
-
-                } else if (errorStats.batch > 0) {
-                    await writeToLog('WARN', '模型無法處理此批次內容。', '可能為格式或內容錯誤。', '前端將標記此批次為可點擊重試。');
-                    sendResponse({ error: 'BATCH_FAILURE', message: '模型無法處理此批次內容。' }); 
-                    
+                // 7. 全軍覆沒：根據最後的狀態回傳結構化錯誤
+                if (allKeysDeadToday) {
+                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: 3600 }); 
+                    await writeToLog('ERROR', '所有 Key 的每日額度(RPD)均已耗盡', null, '請明天再來，或新增更多 API Key。');
+                } else if (lastError && lastError.type === 'BATCH_FAILURE') {
+                    sendResponse({ error: 'BATCH_FAILURE', message: '模型無法處理此批次內容' });
                 } else {
-                    await writeToLog('ERROR', '所有 API Key 與模型均嘗試失敗 (未知原因)。', '請檢查日誌。', '請確認金鑰有效性、用量配額與網路連線。');
-                    sendResponse({ error: '所有模型與 API Key 均嘗試失敗。' });
+                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: 10 });
                 }
 
-            })(); // 立即執行 async 函式
+            })();
             break;
         
         case 'STORE_ERROR_LOG':
@@ -733,4 +637,124 @@ async function writeToLog(level, message, context = null, solution = null) {
     } catch (e) {
         console.error('[Background] writeToLog 函式執行失敗:', e);
     }
+}
+
+// 功能: 錯誤判讀輔助函式，決定刑期長短
+// input: error (Error Object), keyInfo (Object), modelName (String)
+// output: { type, penalty, logLevel, logMessage, userSolution, rawErrorContext }
+function parseErrorAndTrip(error, keyInfo, modelName) {
+    const errStr = error.message;
+    let penalty = 0;
+    let type = 'UNKNOWN';
+    let logLevel = 'WARN';
+    let logMessage = `Key '${keyInfo.name}' @ ${modelName} 失敗`;
+    let userSolution = '系統將自動切換金鑰重試。';
+    const rawErrorContext = errStr.substring(errStr.indexOf('::') + 2); // 提取 HTTP:: 後面的 JSON 文本
+    const httpMatch = errStr.match(/HTTP (\d{3})/);
+    const status = httpMatch ? parseInt(httpMatch[1]) : 0;
+
+    // 1. 嘗試解析 Quota Violations
+    let errorJson;
+    try {
+        // 提取並解析 JSON
+        errorJson = JSON.parse(rawErrorContext);
+    } catch (e) {
+        errorJson = null; // 非 JSON 錯誤
+    }
+    
+    const violations = errorJson?.error?.details?.find(d => d['@type'] === 'type.googleapis.com/google.rpc.QuotaFailure')?.violations || [];
+
+    // 提取所有 Quota ID，用於日誌輸出
+    const quotaIds = violations.map(v => v.quotaId).filter(id => id); 
+    const quotaIdLog = quotaIds.length > 0 ? ` [Quota IDs: ${quotaIds.join(', ')}]` : '';
+
+    // 2. 判決邏輯 (優先級: 永久/RPD > RPM > 兜底)
+    
+    let isRPDError = false;
+    let isRPMError = false;
+    
+    for (const violation of violations) {
+        const quotaId = violation.quotaId || '';
+
+        // 判斷 A: 模型黑名單 / RPD 終止 (Pro 模型在 FreeTier 上就是 RPD 終止)
+        if (
+            quotaId.includes('GenerateContentInputTokensPerModelPerMinute-FreeTier') || // 此模型不適用於免費Key (FreeTier)
+            quotaId.includes('PerDay') || // 每日額度耗盡 (RPD)
+            quotaId.includes('PerHour') || // 每小時額度耗盡 (比 Day 次一級，但也是長時間冷卻)
+            quotaId.includes('PerWeek')
+        ) {
+            isRPDError = true;
+            // 找到 RPD/黑名單錯誤，優先處理
+            break;
+        }
+
+        // 判斷 B: RPM 速率限制
+        if (quotaId.includes('PerMinute')) {
+            isRPMError = true;
+        }
+    }
+
+    // 執行判罰
+    if (isRPDError) {
+        type = 'RPD_LIMIT';
+        penalty = 24 * 60 * 60 * 1000; // 判罰 24 小時
+        // 使用反引號加入 quotaIdLog
+        logMessage += ` (每日/長時間額度耗盡)${quotaIdLog}`;
+        logLevel = 'ERROR';
+        userSolution = '此 Key 的長時間額度已滿或不適用此模型。系統將在 24 小時內自動跳過它。';
+    } else if (isRPMError) {
+        // 檢查 RetryInfo 獲取精確等待時間
+        const retryInfo = errorJson?.error?.details?.find(d => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo');
+        let retryDelaySec = 60; 
+        if (retryInfo?.retryDelay) {
+            // 提取 "56s" 中的數字
+            const delayMatch = retryInfo.retryDelay.match(/(\d+)s/);
+            retryDelaySec = delayMatch ? parseInt(delayMatch[1], 10) : 60;
+        }
+        
+        type = 'RPM_LIMIT';
+        penalty = (retryDelaySec + 5) * 1000; // 判罰 延遲時間 + 5 秒緩衝
+        // 使用反引號加入 quotaIdLog
+        logMessage += ` (速率限制 RPM，冷卻 ${retryDelaySec}s)${quotaIdLog}`;
+    } 
+    else if (errStr.includes('API_KEY_INVALID') || status === 400 || errStr.includes('billing')) {
+        // [Fatal] 金鑰無效/帳單/400 內容錯誤 (兜底)
+        type = 'FATAL';
+        penalty = 365 * 24 * 60 * 60 * 1000; // 判罰 1 年 (永久)
+        logMessage += ' (永久性金鑰錯誤)';
+        logLevel = 'ERROR';
+        userSolution = '請檢查 API Key 是否正確或帳單是否已啟用。';
+    } else {
+        // 未知錯誤 (例如 500, 503)
+        type = 'UNKNOWN';
+        penalty = 10 * 1000; // 10 秒短暫休息
+        logMessage += ' (未知錯誤，短暫休息)';
+    }
+
+    return { type, penalty, logLevel, logMessage, userSolution, rawErrorContext };
+}
+
+// Key 黏著性的輔助函式
+// 功能: 讀取上一次成功的 Key ID，並將其移到 Key 陣列的第一位。
+// input: apiKeys (Array) - 原始 Key 陣列。
+// output: (Array) - 排序後的 Key 陣列。
+async function reorderKeysByStickiness(apiKeys) {
+    if (!apiKeys || apiKeys.length <= 1) return apiKeys;
+    
+    // 讀取上一次成功的 Key ID
+    const result = await chrome.storage.session.get({ [LAST_SUCCESSFUL_KEY_ID]: null });
+    const lastSuccessfulId = result[LAST_SUCCESSFUL_KEY_ID];
+    
+    if (!lastSuccessfulId) return apiKeys;
+
+    const stickIndex = apiKeys.findIndex(key => key.id === lastSuccessfulId);
+
+    if (stickIndex > 0) {
+        // 找到 Key，將其移動到第一個位置
+        const stickyKey = apiKeys.splice(stickIndex, 1)[0];
+        apiKeys.unshift(stickyKey);
+        // console.log(`[Stickiness] Key ${lastSuccessfulId} 移至首位`);
+    }
+    
+    return apiKeys;
 }
