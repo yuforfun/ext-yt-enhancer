@@ -86,4 +86,4 @@
 
 ## 6. 聯絡我們
 
-如果您對本隱私權政策有任何疑問，歡迎透過本專案的 [GitHub Issues](https://github.com/yuforfun/youtube_enhancer/issues) 頁面與我們聯繫。
+如果您對本隱私權政策有任何疑問，歡迎透過本專案的 [GitHub Issues](https://github.com/yuforfun/ext-yt-enhancer/issues) 頁面與我們聯繫。
