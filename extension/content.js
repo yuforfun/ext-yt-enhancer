@@ -2,7 +2,7 @@
 /**
  * @file content.js
  * @author [yuforfun]
- * @copyright 2026 [yuforfun]
+ * @copyright 2025 [yuforfun]
  * @license MIT
  */
 
@@ -517,19 +517,22 @@ class YouTubeSubtitleEnhancer {
         this._log('--- ✅ cleanup() 完成 ---');
     }
 
-    // 功能: (vssId 驗證版) 處理自動啟用字幕超時，確保清除鎖定。
     handleActivationFailure() {
+        // 功能: 處理自動啟用字幕超時（看門狗觸發）後的系統反應。
+        // input: 無
+        // output: 無 (副作用: 變更狀態圓環 UI)
+        // 其他補充: 將原本厚重的文字提示轉化為輕量化的 Orb 狀態。
+        
         this._log('❌ [看門狗] 自動啟用字幕超時！');
         this.state.activationWatchdog = null;
         // 失敗時也要清除鎖定，以便後續手動操作能正常運作
         this.state.targetVssId = null; 
-        
-        if (!this.state.subtitleContainer) {
-            const playerContainer = document.getElementById('movie_player');
-            if(playerContainer) this.createSubtitleContainer(playerContainer);
-        }
-        if(this.state.subtitleContainer) {
-            this.state.subtitleContainer.innerHTML = `<div class="enhancer-line enhancer-error-line">自動啟用字幕失敗，請手動選擇字幕</div>`;
+
+        // 【關鍵修正點】: 確保 Orb 存在並切換至 cc-failed 狀態，不再向字幕容器插入 HTML
+        const playerContainer = document.getElementById('movie_player');
+        if (playerContainer) {
+            this.createStatusOrb(playerContainer);
+            this.setOrbState('cc-failed');
         }
     }
 
@@ -1446,15 +1449,18 @@ class YouTubeSubtitleEnhancer {
     }
 
     setOrbState(state, errorMsg = '') {
-        // 功能: 控制右上角狀態圓環的顯示狀態。
+        // 功能: 控制右上角狀態圓環的顯示狀態、顏色與提示文字。
         // input: state (字串), errorMsg (可選字串)
-        // output: (DOM 操作)
+        // output: 無 (DOM 操作)
+        // 其他補充: 新增 cc-failed 狀態，讓使用者明確知道需要手動切換 YouTube 字幕。
+        
         const orb = this.state.statusOrb;
         if (!orb) return;
         orb.className = 'enhancer-status-orb';
         orb.classList.add(`state-${state}`);
         const { translationProgress: progress, sourceLang } = this.state;
         const langName = this.getFriendlyLangName(sourceLang);
+        
         switch (state) {
             case 'translating':
                 if (progress && progress.total > 0) {
@@ -1475,12 +1481,18 @@ class YouTubeSubtitleEnhancer {
             case 'retrying':
                 if (progress && progress.total > 0) {
                     const percent = Math.round((progress.done / progress.total) * 100);
-                    orb.innerHTML = `<div>${percent}%</div>`; // 顯示進度 %
+                    orb.innerHTML = `<div>${percent}%</div>`;
                     orb.title = `模型暫時過載，自動重試中... (${progress.done}/${progress.total})`;
                 } else {
-                    orb.innerHTML = '<div>%</div>'; // Fallback
+                    orb.innerHTML = '<div>%</div>';
                     orb.title = '模型暫時過載，自動重試中...';
                 }
+                break;
+            
+            // 【關鍵修正點】: 新增 CC 狀態顯示邏輯
+            case 'cc-failed':
+                orb.innerHTML = '<div>CC</div>';
+                orb.title = 'YouTube 限制自動啟用，請手動點擊影片右下角 CC 按鈕開啟字幕以觸發翻譯。';
                 break;
                 
             case 'error':

@@ -209,3 +209,27 @@
     opacity: 1;
     pointer-events: auto;
 }
+
+/* 【關鍵修正點】: 明亮黃半透明背景 (Amber 400) 與脈衝效果 */
+#enhancer-status-orb.state-cc-failed {
+    /* 使用 0.7 透明度達成高通透感，顏色採用明亮黃 #fbbf24 */
+    background-color: rgba(251, 191, 36, 0.7); 
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-sizing: border-box;
+    animation: orb-pulse-yellow 2s infinite;
+    cursor: help;
+}
+
+/* 針對明亮黃優化的脈衝動畫 */
+@keyframes orb-pulse-yellow {
+    0% {
+        box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+    }
+    70% {
+        /* 擴散時透明度逐漸歸零，半徑微幅增加 */
+        box-shadow: 0 0 0 12px rgba(251, 191, 36, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+    }
+}
