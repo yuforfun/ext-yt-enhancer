@@ -1,4 +1,4 @@
-# YouTube 字幕增強器 - 專案情境總結 (v4.1.4)
+# YouTube 翻譯增強工具 (Ext-YT-Enhancer) - 專案情境總結 (v4.2.0)
 
 ## 1. 專案目標與核心功能
 
@@ -25,15 +25,12 @@
 
 ## 2. 系統架構與資訊流
 
-本專案由三個主要環境組成，各司其職並透過訊息傳遞溝通。
-
 * **架構組成**：
-    * **後端 (Service Worker)**: `background.js`。負責 API 通訊、斷路器狀態管理、錯誤判讀、跨分頁設定廣播。
-    * **前端 (Main World)**: `injector.js`。負責攔截 `timedtext` 網路請求、操作 YouTube 播放器 API (`player.setOption`)。
-    * **前端 (Isolated World)**: `content.js`。負責業務邏輯、決策引擎、HQS 運算、UI 渲染 (字幕/圓環)。
-    * **資料庫 (Local/Session)**: `chrome.storage`。
-        * `local`: 儲存使用者設定 (`ytEnhancerSettings`)、API 金鑰 (`userApiKeys`)、影片翻譯快取。
-        * `session`: 儲存斷路器狀態 (`circuitBreakerState`)、錯誤日誌。
+* **開發層 (Source)**: `src/` (ES Modules)，支援 npm 生態系。
+* **建置層 (Build)**: `esbuild` (自動化打包)，將 `src/` 編譯為瀏覽器可執行的 `extension/`。
+* **執行層 (Runtime)**: `extension/` (Chrome Extension 環境)。
+* **模型層**: Google GenAI SDK (`@google/genai`)。
+
 
 * **典型資訊流**：
 
@@ -80,61 +77,31 @@
 
 ## 3. 專案檔案結構與職責
 
-* **後端 (Backend)**：
-    * `background.js`:
-        * `CircuitBreaker` (Class): 管理 `keyId::modelId` 的冷卻時間戳記。
-        * `translateBatch`: 實作「模型優先」的雙重迴圈與錯誤重試邏輯。
-        * `parseErrorAndTrip`: 解析 Google API 錯誤 (Quota/Billing)，決定判罰刑期。
-        * `reorderKeysByStickiness`: 實作金鑰優先級調整。
-* **前端 (Frontend)**：
-    * `injector.js`: (MAIN World) "現場特工"。實作 **握手回應方** (`onNavigate`, `handleContentMessage`)、**主動導航通知** (`YT_NAVIGATED`)、攔截 `timedtext` (Fetch/XHR 雙攔截器)、確保 `vssId` 為 `''`、存取 `player` 物件 (`getPlayerResponse`, `setOption` 3 次重試)。
-    * `content.js`: (ISOLATED World) "指揮中心"。實作 **握手請求方** (`requestPlayerResponse`)、**三層決策引擎** (`start`, `onMessageFromInjector`)、**vssId 鎖定**、**HQS 引擎** (`parseRawSubtitles` 及 `_phase` 函式)、UI 渲染 (字幕/圓環/Tier 3 按鈕)、批次錯誤處理 (`BATCH_SIZE=25`, `handleRetryBatchClick`)。
-* **介面與邏輯 (UI & Logic)**：
-    * `manifest.json`: MV3 設定檔。**關鍵權限**：`storage`, `scripting`, `tabs`, `host_permissions: ["...youtube.com/*", "...googleapis.com/*"]`。
-    * `popup.html`: "遙控器" (Action Popup) 的 UI。包含總開關、即時設定 (顯示模式、HQS 開關、字體大小)。
-    * `options.html`: "管理後台" (Options Page) 的 UI。包含頁籤、語言清單 A/B、模型偏好、金鑰管理、診斷日誌。
-    * `popup.js`: **共享腳本**。處理 `popup.html` 和 `options.html` 的所有 DOM 事件與邏輯。實作設定 I/O、動態列表渲染 (金鑰、模型、Tier 1/2)。
-    * `lab.html`: "Prompt 實驗室" (Dev Tool) 的 UI。提供 A/B 測試用的 `textarea`。
-    * `lab.js`: `lab.html` 的驅動腳本。處理 A/B 測試的 API 呼叫與結果渲染。
-* **樣式與資源 (CSS)**：
-    * `style.css`: `content.js` 注入的 CSS。定義雙語字幕容器 (`#enhancer-subtitle-container`)、狀態圓環 (`#enhancer-status-orb`)、Tier 3 按鈕 (`#enhancer-ondemand-button`)、批次錯誤行 (`.enhancer-error-line`)。
-    * `popup.css`: **共享樣式表**。定義 `popup.html`, `options.html`, `lab.html` 的核心 UI 規範。
-        * **UI 規範**: 採用卡片式 (`.card`) 佈局。
-        * **色彩**: 淺色背景 (`--bg-color: #f4f4f5`)、白色卡片 (`--card-bg-color: #ffffff`)、深色點綴 (`--accent-color: #18181b`)。
-        * **元件**: 定義了標準化的 `.button-primary`, `.button-secondary`, `.toggle-switch`, `.sortable-list` 等元件樣式。
+* **後端邏輯 (Backend Context)**：
+* `src/background.js`: **[唯一真理]** 開發與邏輯修改處。負責 SDK 初始化、Batch 處理、錯誤判刑。
+* `extension/background.js`: **[唯讀產物]** 由 `npm run build` 生成。**嚴禁手動修改**。
 
-## 4. 後端 API 溝通協議
 
-系統內部使用 `chrome.runtime.sendMessage` 進行溝通。
+* **前端腳本 (Frontend Script)**：
+* `extension/content.js`: 負責 DOM 操作、字幕樣式渲染、Orb 狀態顯示。**嚴禁包含任何 API 金鑰邏輯**。
+* `extension/injector.js`: 負責將攔截器注入 YouTube 頁面環境。
 
-* **`POST /translateBatch`**
-    * **功能**: 執行智慧負載平衡翻譯。
-    * **請求**: `{ action: 'translateBatch', texts: ["..."], source_lang: "ja", models_preference: ["gemini-3...", "gemini-2..."] }`
-    * **成功回應**: `{ data: ["翻譯1", "翻譯2"...] }`
-    * **結構化錯誤**:
-        * `{ error: 'TEMPORARY_FAILURE', retryDelay: 60 }`: 所有 Key 短暫過載 (RPM)，前端應等待後重試。
-        * `{ error: 'PERMANENT_FAILURE', message: "..." }`: 無有效 Key 或帳單錯誤，前端應停止翻譯。
-        * `{ error: 'BATCH_FAILURE', message: "..." }`: 模型拒絕處理此內容 (Safety Filter)，前端應跳過此批次。
-* **`GET /getSettings`**
-    * **Action**: `getSettings`
-    * **功能**: 獲取 `ytEnhancerSettings`。
-* **`POST /updateSettings`**
-    * **Action**: `updateSettings`
-    * **功能**: 儲存 `ytEnhancerSettings`。
-* **`GET /diagnoseAllKeys`**
-    * **Action**: `diagnoseAllKeys`
-    * **功能**: 診斷所有儲存的金鑰。
-    * **回應**: `[ { "name": "Key1", "status": "valid" | "invalid", "error": "..." } ]`
-* **`GET /diagnoseAllKeys`**
-    * **功能**: 快速診斷所有金鑰有效性 (不消耗額度)。
-    * **回應**: `[{ name: "Key1", status: "valid" }, { name: "Key2", status: "invalid", error: "..." }]`
-* **`GET /getDebugPrompts`**
-    * **Action**: `getDebugPrompts`
-    * **功能**: (供 `lab.js` 使用) 獲取預設的通用 Prompt 和儲存的日文自訂 Prompt。
-    * **回應**: `{ success: true, universalPrompt: "...", savedCustomPrompt: "..." }`
-* **(其他)**: `toggleGlobalState`, `getErrorLogs`, `STORE_ERROR_LOG`, `getCache`, `setCache`...
 
-## 5. 關鍵決策與歷史包袱 (重要)
+* **配置與靜態資源**：
+* `package.json`: 定義依賴 (`@google/genai`) 與建置腳本。
+* `extension/style.css`: 定義 Orb 的視覺狀態 (Loading/Success/Error/CoolingDown)。
+
+
+
+## 4. 後端 API 溝通協議 (SDK 規範)
+
+全面遷移至官方 **Google GenAI SDK**，不再使用手動 Fetch。
+
+* **初始化**: `import { GoogleGenAI } from "@google/genai"`。
+* **資料解析**: 必須使用 `response.candidates[0].content.parts[0].text` 提取文字。
+* **錯誤處理**: 必須解析 `error.details` 判斷 `PerDay` (24h冷卻) 或 `PerMinute` (65s冷卻)。
+
+## 5. 關鍵決策與歷史包袱 (History & Decisions)
 
 此章節紀錄專案開發過程中的核心權衡（Trade-offs）與不可動搖的架構基石。
 
@@ -167,6 +134,25 @@
 * **[決策] `injector.js` 的 vssId `''` Fallback**：
     * **原因**：`URL.searchParams.get('vssId')` 在 `vssId` 不存在時 (例如手動上傳的字幕) 會回傳 `null`，這會導致 `content.js` 的 `vssId === targetVssId` 驗證邏輯崩潰。
     * **實作**：`injector.js` 在獲取 `vssId` 時強制使用 `|| ''`，確保 `vssId` 永不為 `null`。
+    * 
+* **[開發流] 引入編譯步驟 (esbuild)**
+* **決策**：從直接撰寫瀏覽器腳本，轉變為 `src/` (原始碼) + `npm run build` (打包) 的流程。
+* **原因**：為了使用官方 `Google GenAI SDK` (它依賴 Node.js 生態系)，Chrome MV3 環境無法直接 `import` npm 套件，必須透過打包工具將依賴項壓製成單一檔案。
+
+
+* **[核心] 遷移至 Google GenAI SDK (`@google/genai`)**
+* **決策**：捨棄手動維護的 `fetch` REST API 呼叫，全面改用官方 SDK。
+* **原因**：手動處理 HTTP/2 連線復用 (Connection Reuse) 與複雜的 JSON 解析過於脆弱。SDK 提供了更強健的錯誤處理與類別封裝，雖增加了檔案體積 (約 +200KB)，但換取了極高的通訊穩定性。
+
+
+* **[邏輯] 嚴格的斷路器機制 (Circuit Breaker)**
+* **決策**：在客戶端實作 `QuotaFailure` 的深度解析，區分 `PerDay` (24h) 與 `PerMinute` (65s) 限制。
+* **原因**：單純的重試 (Retry) 會導致 API Key 被 Google 判定為濫用。我們選擇「主動冷卻」，在本地端攔截請求，保護使用者的 API Key 信譽。
+
+
+* **[體驗] 預設 Gemini 3.0 Flash 與成本透明化**
+* **決策**：將最新模型設為預設，並在 UI 顯示實測價格 (每百句約 NT$0.02)。
+* **原因**：消除使用者對「付費」的恐懼。3.0 模型的速度與語意理解能力遠超 1.5 Flash，是目前 CP 值最佳的選擇。
 
 ### 歷史包袱 (Legacy Debt)
 * **[包袱] 資料庫遷移 (Migration)**：
@@ -200,21 +186,23 @@
 ### [UI 與其他] Popup & Options
 * **[禁止]**：**嚴格禁止**在 `popup.js` 中直接存取只存在於 `options.html` 的 DOM 元素 (例如 `apiKeyList`)。存取前**必須**使用 `if (isOptionsPage)` 或 `if (element)` 進行嚴格檢查，否則會導致 `popup.html` (小彈窗) 崩潰。
 
+* **[禁止] 直接修改 `extension/background.js` (No Direct Edit on Artifacts)**
+* **內容**：**絕對禁止**在 `extension/background.js` 進行任何邏輯修改。
+* **後果**：該檔案是 `src/background.js` 經過 esbuild 產生的「編譯成品」。任何在此處的手動修改，都會在下一次執行 `npm run build` 時被無情覆蓋並遺失。
 
-### Gemini 模型免費版實測總結 (2026-02-08)
 
-針對當前專案支援的模型，使用免費版 API Key 進行一次性可用性測試，結果如下：
+* **[禁止] 混用通訊協議 (No Protocol Mixing)**
+* **內容**：**嚴格禁止**在專案中重新引入手動的 `fetch('https://generativelanguage...')` 呼叫。
+* **後果**：系統已全面標準化為 `GoogleGenAI` 類別實例。混用舊版 fetch 會導致全域的錯誤攔截 (Circuit Breaker) 無法捕捉該請求的失敗狀態，破壞冷卻機制。
 
-#### 1. 測試結果清單
 
-* **gemini-3-flash-preview**: ✅ **成功** (耗時 3.03s)。輸出格式正確且語意流暢。
-* **gemini-2.5-flash**: ✅ **成功** (耗時 4.02s)。翻譯品質穩定，符合台灣口語習慣。
-* **gemini-2.5-flash-lite**: ✅ **成功** (耗時 **1.22s**)。回應速度最快，適合效能優先情境。
-* **Pro 系列 (3-pro, 2.5-pro)**: ❌ **失敗** (HTTP 429)。免費層級配額限制為 0，無法直接調用。
-* **2.0 系列 (2.0-flash, 2.0-flash-lite)**: ❌ **失敗** (HTTP 429)。實測顯示目前免費版 Key 在此等模型上的請求限制亦為 0。
+* **[禁止] 使用非結構化路徑讀取回應**
+* **內容**：**禁止**使用 SDK 的 `.text()` 簡便方法，必須使用 `response.candidates[0].content.parts[0].text`。
+* **後果**：為了確保對應到正確的候選回應 (Candidate) 並過濾掉安全性阻擋 (Safety Block) 的空回應，必須使用明確的 JSON 路徑解析，否則容易在邊界情況下報錯。
 
-#### 2. 開發與配置建議
 
-* **免費版首選模型**：建議將 `gemini-2.5-flash-lite` 設為預設或高優先級模型，其 1.22s 的響應速度能顯著提升字幕同步的即時感。
-* **配額限制說明**：免費版用戶應避開 Pro 系列及 2.0 系列模型，否則將觸發 `RESOURCE_EXHAUSTED` 錯誤導致翻譯中斷。
-* **錯誤處理機制**：系統已證實能精確擷取 HTTP 429 錯誤中的 `Quota exceeded` 訊息，未來可持續利用此特性優化斷路器（Circuit Breaker）的判罰邏輯。
+* **[禁止] 隨意變更 `active_key_index` 儲存鍵名**
+* **內容**：`chrome.storage.local` 中的 `active_key_index` 是前後端同步狀態的關鍵。
+* **後果**：更動此鍵名需同步修改 `options.js`、`popup.js` 與 `background.js`，否則會導致 API Key 輪替功能失效，讓使用者卡死在無效的 Key 上。
+
+
