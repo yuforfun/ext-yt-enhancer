@@ -6,7 +6,8 @@
  */
 'use strict';
 
-import { createGenAI } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+
 
 // 區塊: DEFAULT_CORE_PROMPT_TEMPLATE
 const DEFAULT_CORE_PROMPT_TEMPLATE = `你是一位頂尖的繁體中文譯者與{source_lang}校對專家，專為台灣的使用者翻譯 YouTube 影片的自動字幕。
@@ -272,19 +273,28 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                         allKeysDeadToday = false; 
 
                         try {
-                            // 【關鍵修正點】: 初始化 SDK 客戶端與模型
-                            const client = createGenAI({ apiKey: keyInfo.key });
+                            const client = new GoogleGenAI({ apiKey: keyInfo.key });
                             
-                            // 【關鍵修正點】: 使用 SDK 調用 API
                             const response = await client.models.generateContent({
                                 model: modelName,
                                 contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
                                 generationConfig: { responseMimeType: "application/json" },
-                                safetySettings: SAFETY_SETTINGS
+                                safetySettings: SAFETY_SETTINGS 
                             });
 
-                            // SDK 的 text() 會自動處理回應
-                            const rawText = response.response.text();
+                            // 【關鍵修正點】: 針對 @google/genai SDK 的原始物件結構進行提取
+                            // 順序：candidates -> 第一個候選 -> 內容 -> 第一個零件 -> 文字
+                            let rawText = "";
+                            if (response && response.candidates && response.candidates[0]?.content?.parts?.[0]?.text) {
+                                rawText = response.candidates[0].content.parts[0].text;
+                            } else if (typeof response.text === 'function') {
+                                // 雙重保險：萬一某些版本又有 text() 函式
+                                rawText = response.text();
+                            } else {
+                                throw new Error('API 回傳內容格式不全，無法提取文字。');
+                            }
+                            
+                            // 後續處理邏輯 (match JSON 陣列) 維持不變
                             const jsonMatch = rawText.match(/\[[\s\S]*\]/);
                             if (!jsonMatch) throw new Error('回應中找不到 JSON 陣列');
                             
