@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "YouTube 字幕增強器",
-    "version": "4.1.4",
-    "description": "開發：擷取 YouTube 字幕並翻譯，提供雙語顯示模式。",
+    "version": "4.1.5",
+    "description": "擷取 YouTube 字幕並翻譯，提供雙語顯示模式。",
     "permissions": [
         "storage",
         "tabs",
