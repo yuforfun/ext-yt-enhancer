@@ -1,0 +1,31 @@
+{
+  "name": "ext-yt-enhancer",
+  "version": "4.2.0",
+  "description": "[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/oaklppenkdpldnacibpedgfmaieabnaa?style=for-the-badge&logo=googlechrome&label=Chrome%20Web%20Store)](https://chrome.google.com/webstore/detail/oaklppenkdpldnacibpedgfmaieabnaa)",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "esbuild src/background.js --bundle --outfile=extension/background.js --minify",
+    "watch": "esbuild src/background.js --bundle --outfile=extension/background.js --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuforfun/ext-yt-enhancer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yuforfun/ext-yt-enhancer/issues"
+  },
+  "homepage": "https://github.com/yuforfun/ext-yt-enhancer#readme",
+  "dependencies": {
+    "@google/genai": "^1.40.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3"
+  }
+}

@@ -2,7 +2,7 @@
 /**
  * @file content.js
  * @author [yuforfun]
- * @copyright 2025 [yuforfun]
+ * @copyright 2026 [yuforfun]
  * @license MIT
  */
 

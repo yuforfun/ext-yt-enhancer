@@ -41,3 +41,5 @@ dist/
 
 # 忽略個人檔案
 .local/
+
+node_modules/

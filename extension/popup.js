@@ -1,7 +1,7 @@
 /**
  * @file popup.js
  * @author [yuforfun]
- * @copyright 2025 [yuforfun]
+ * @copyright 2026 [yuforfun]
  * @license MIT
  */
 
@@ -40,12 +40,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     const ALL_MODELS = {
-        // 更新模型列表，納入 3.0 Pro 與 Flash-Lite，並更新 Tip 描述以反映新的配額現實
-        'gemini-3-pro-preview': { name: 'Gemini 3.0 Pro (Preview)', tip: '（需付費）最新最強模型，適合複雜推理 (每日限量)。' },
-        'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', tip: '（需付費）穩定高品質主力，適合長句翻譯。' },
+        // 更新模型列表，納入 3.0 系列
+        // 【關鍵修正點】: 新增 gemini-3-flash-preview
+        'gemini-3-flash-preview': { name: 'Gemini 3.0 Flash', tip: '2026 推薦首選：兼具極致速度與精準理解力。' },
         'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', tip: '免費但每日額度極低 (20 RPD)，將作為優先衝鋒模型。' },
         'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash-Lite', tip: '極速輕量版，適合快速瀏覽。' },
-        'gemini-2.0-flash-exp': { name: 'Gemini 2.0 Flash (Exp)', tip: '（需付費）實驗性模型，額度通常較高。' },
+        'gemini-3-pro-preview': { name: 'Gemini 3.0 Pro', tip: '（需付費）最新最強模型，適合複雜推理 (每日限量)。' },
+        'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', tip: '（需付費）穩定高品質主力，適合長句翻譯。' },
         'gemini-2.0-flash': { name: 'Gemini 2.0 Flash', tip: '（需付費）舊版高速模型 (備用)。' },
         'gemini-2.0-flash-lite': { name: 'Gemini 2.0 Flash-Lite', tip: '（需付費）舊版最快模型 (備用)。' }
     };
