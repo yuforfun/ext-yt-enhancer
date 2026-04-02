@@ -40,15 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     const ALL_MODELS = {
-        // 更新模型列表，納入 3.0 系列
-        // 【關鍵修正點】: 新增 gemini-3-flash-preview
-        'gemini-3-flash-preview': { name: 'Gemini 3.0 Flash', tip: '2026 推薦首選：兼具極致速度與精準理解力。' },
-        'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', tip: '免費但每日額度極低 (20 RPD)，將作為優先衝鋒模型。' },
-        'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash-Lite', tip: '極速輕量版，適合快速瀏覽。' },
-        'gemini-3-pro-preview': { name: 'Gemini 3.0 Pro', tip: '（需付費）最新最強模型，適合複雜推理 (每日限量)。' },
+        // 【關鍵修正點】: 新增 3.1 系列，保留指定模型，移除 2.0 系列
+        'gemini-3.1-flash-lite-preview': { name: 'Gemini 3.1 Flash-Lite', tip: '推薦首選：新一代輕量模型，每日 500 RPD。' },
+        'gemini-3.1-pro-preview': { name: 'Gemini 3.1 Pro', tip: '（需付費）最新模型，適合複雜推理。' },
+        'gemini-3-pro-preview': { name: 'Gemini 3.0 Pro', tip: '（需付費）穩定強大模型，適合複雜推理。' },
+        'gemini-3-flash-preview': { name: 'Gemini 3.0 Flash', tip: '免費API，每日 20 RPD' },
         'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', tip: '（需付費）穩定高品質主力，適合長句翻譯。' },
-        'gemini-2.0-flash': { name: 'Gemini 2.0 Flash', tip: '（需付費）舊版高速模型 (備用)。' },
-        'gemini-2.0-flash-lite': { name: 'Gemini 2.0 Flash-Lite', tip: '（需付費）舊版最快模型 (備用)。' }
+        'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', tip: '上一代模型，免費API，每日 20 RPD' },
+        'gemini-2.5-flash-lite': { name: 'Gemini 2.5 Flash-Lite', tip: '上一代模型，免費API，每日 20 RPD' }
     };
 
     const NEW_LANGUAGE_PROMPT_TEMPLATE = `**風格指南:**
@@ -920,6 +919,14 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('language-search-input')?.addEventListener('input', (e) => {
             renderLanguageSearchResults(e.target.value);
         });
+        // 【關鍵修正點】: 新增進階實驗室的開啟事件
+        // 功能: 點擊按鈕後，以新分頁開啟 lab.html，確保有最大視野
+        const openLabBtn = document.getElementById('openLabButton');
+        if (openLabBtn) {
+            openLabBtn.addEventListener('click', () => {
+                chrome.tabs.create({ url: chrome.runtime.getURL('lab.html') });
+            });
+        }
 
     } else {
         // --- Popup Page 專屬邏輯 ---

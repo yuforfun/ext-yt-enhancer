@@ -1,50 +1,88 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>YT 增強器 - Prompt 實驗室</title>
+    <title>YT 增強器 - 進階實驗室</title>
     <link rel="stylesheet" href="popup.css">
     <meta charset="UTF-8">
     <style>
-        /* 專用於 Lab 頁面的樣式 */
+        /* 進階實驗室專屬樣式 */
         body {
             width: auto;
-            max-width: 900px;
+            max-width: 1000px; /* 加寬以容納對比表格 */
             margin: 0 auto;
             padding: 20px;
         }
         textarea {
-            min-height: 250px; 
-            font-family: Consolas, monospace;
-            font-size: 13px;
+            width: 100%;
+            box-sizing: border-box;
+            /* 【關鍵修正點】: 統一字體為微軟正黑體，並稍微加大字級 */
+            font-family: 'Microsoft JhengHei', sans-serif;
+            font-size: 14px;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            resize: vertical;
         }
-        .lab-grid {
+        /* 頁籤切換列樣式 */
+        .lab-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+        .tab-btn {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            font-size: 16px;
+            font-weight: bold;
+            color: var(--text-light-color);
+            cursor: pointer;
+        }
+        .tab-btn.active {
+            color: var(--primary-color);
+            border-bottom: 3px solid var(--primary-color);
+            margin-bottom: -13px; /* 覆蓋底線 */
+        }
+        /* 共用輸入區塊樣式 */
+        .input-section {
+            margin-bottom: 20px;
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .quick-actions {
+            margin-bottom: 10px;
+            display: flex;
+            gap: 10px;
+        }
+        .quick-actions button {
+            padding: 6px 12px;
+        }
+        /* Prompt 左右面板樣式 */
+        .prompt-panels {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 16px;
+            margin-bottom: 20px;
         }
-        .grid-col-span-2 {
-            grid-column: 1 / -1; 
+        .panel {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
-        
-        /* 【關鍵修正點】: v4.1.2 - 輸出卡片標題列樣式 */
-        .output-card-header {
+        .actions {
+            margin-bottom: 20px;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px; /* 標題和內容的分隔 */
+            gap: 10px;
+            /* 【關鍵修正點】: 加上垂直置中對齊，防止按鈕被拉伸得又高又醜 */
+            align-items: center; 
         }
-        .output-card-header .card-title {
-            margin: 0; /* 移除 card-title 的預設 margin */
-        }
-        #lab-copy-button {
-            display: none; /* 預設隱藏 */
-            width: auto; /* 非 100% 寬度 */
-            padding: 6px 14px; /* 次要按鈕的 padding */
-            font-weight: 500;
-        }
-
-        /* 輸出表格樣式 */
-        #lab-output-area {
+        /* 輸出區域樣式 */
+        .output-area {
             background-color: #f9fafb;
             border: 1px solid var(--border-color);
             border-radius: 6px;
@@ -53,96 +91,90 @@
             font-size: 13px;
             overflow-x: auto; 
         }
-        #lab-output-area table {
+        .output-area table {
             width: 100%;
             border-collapse: collapse;
         }
-        #lab-output-area th, 
-        #lab-output-area td {
+        .output-area th, 
+        .output-area td {
             border: 1px solid var(--border-color);
             padding: 8px 10px;
             text-align: left;
             vertical-align: top;
-            font-size: 13px;
-        }
-        #lab-output-area th {
-            background-color: #f4f4f5;
-        }
-        #lab-output-area td {
-            width: 33.33%;
+            white-space: pre-wrap;
             line-height: 1.6;
-            white-space: pre-wrap; 
         }
-        .status-loading {
-            color: var(--text-light-color);
-            font-style: italic;
+        .output-area th { background-color: #f4f4f5; }
+        
+        /* 開發者專屬隱藏區塊 */
+        .dev-only {
+            display: none;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px dashed #ff6b6b;
         }
-        .status-error {
-            color: var(--danger-color);
-            font-weight: 600;
-        }
-        .status-info {
-            color: var(--text-color);
-            font-weight: 500;
-        }
-        .status-success {
-            color: var(--success-color);
-            font-weight: 600;
-        }
+        
+        /* 狀態文字顏色 */
+        .status-loading { color: var(--text-light-color); font-style: italic; }
+        .status-error { color: var(--danger-color); font-weight: 600; }
+        .status-info { color: var(--text-color); font-weight: 500; }
     </style>
 </head>
 <body>
     <header class="header" style="margin-bottom: 20px;">
-        <h1>Prompt 實驗室</h1>
-        <span class="version-badge">v4.2.0</span>
+        <h1 id="lab-header" title="連點 5 次解鎖開發者模式" style="cursor: pointer; user-select: none;">進階實驗室 (Advanced Lab)</h1>
+        <span class="version-badge">v4.2.1</span>
     </header>
 
-    <div class="lab-grid">
-        <div class="card grid-col-span-2" id="lab-input-card">
-            <h2 class="card-title">1. 輸入 ASR 字幕原文 (JSON 陣列)</h2>
-            <p class="card-hint">
-                請貼上 JSON 陣列格式的原文 (例如: `["こんにちは", "元気ですか？"]`)。
-                <br>
-                目前實驗室預設使用 `source_lang: "ja"` (日文) 進行 API 呼叫。
-            </p>
-            <textarea id="lab-input-json" rows="5">["こんにちは世界", "お元気ですか？"]</textarea>
-        </div>
+    <div class="lab-tabs">
+        <button id="tab-btn-prompt" class="tab-btn active">Prompt</button>
+        <button id="tab-btn-model" class="tab-btn">Model</button>
+    </div>
 
-        <div class="card">
-            <h2 class="card-title">2. Prompt A (基準 - 自訂)</h2>
-            <p class="card-hint">您當前儲存的風格指南/名詞表。</p>
-            <textarea id="lab-custom-a" rows="15"></textarea>
+    <div class="input-section">
+        <h3 style="margin-top: 0;">測試文本（格式純文字，每行一句）</h3>
+        <div class="quick-actions">
+            <button id="btn-load-short" class="button-secondary">範本：短句日常</button>
+            <button id="btn-load-long" class="button-secondary">範本：長句與專有名詞</button>
         </div>
-        <div class="card">
-            <h2 class="card-title">2. Prompt A (基準 - 通用)</h2>
-            <p class="card-hint">系統預設的通用指令。</p>
-            <textarea id="lab-universal-a" rows="15"></textarea>
-        </div>
+        <textarea id="lab-input-text" rows="8" placeholder="請貼上待翻譯的句子，每行一句。背景會自動轉換陣列送出..."></textarea>
+    </div>
 
-        <div class="card">
-            <h2 class="card-title">3. Prompt B (實驗 - 自訂)</h2>
-            <p class="card-hint">您要測試的新版「自訂 Prompt」。</p>
-            <textarea id="lab-custom-b" rows="15"></textarea>
-        </div>
-        <div class="card">
-            <h2 class="card-title">3. Prompt B (實驗 - 通用)</h2>
-            <p class="card-hint">您要測試的新版「通用 Prompt」。</p>
-            <textarea id="lab-universal-b" rows="15"></textarea>
-        </div>
-        
-        <div class="card grid-col-span-2" style="padding-bottom: 8px;">
-            <button id="lab-run-button" class="button-primary" style="width: 100%;">執行比較翻譯</button>
-        </div>
-
-        <div class="card grid-col-span-2" id="lab-output-card">
-            <div class="output-card-header">
-                <h2 class="card-title">4. 輸出結果</h2>
-                <button id="lab-copy-button" class="button-secondary">複製結果 (純文字)</button>
+    <div id="pane-prompt" class="tab-pane active">
+        <div class="prompt-panels">
+            <div class="panel">
+                <h3 style="margin-top: 0;">實驗 A (基準)</h3>
+                <textarea id="lab-custom-a" rows="12" placeholder="自訂 Prompt (風格/專有名詞)..."></textarea>
+                <div class="dev-only">
+                    <h4 style="color: #ff6b6b; margin-bottom: 8px;">[開發者] Universal Prompt A</h4>
+                    <textarea id="lab-universal-a" rows="12" style="border-color: #ff6b6b;"></textarea>
+                </div>
             </div>
-            <div id="lab-output-area">
-                <p class="status-loading">正在載入您儲存的預設 Prompts...</p>
+            <div class="panel">
+                <h3 style="margin-top: 0;">實驗 B (對照)</h3>
+                <textarea id="lab-custom-b" rows="12" placeholder="自訂 Prompt (風格/專有名詞)..."></textarea>
+                <div class="dev-only">
+                    <h4 style="color: #ff6b6b; margin-bottom: 8px;">[開發者] Universal Prompt B</h4>
+                    <textarea id="lab-universal-b" rows="12" style="border-color: #ff6b6b;"></textarea>
+                </div>
             </div>
         </div>
+        <div class="actions">
+            <button id="lab-run-prompt-button" class="button-primary">執行 A/B 比較翻譯</button>
+            <button id="lab-copy-button" class="button-secondary" style="display: none;">複製結果</button>
+        </div>
+        <div id="lab-prompt-output-area" class="output-area"></div>
+    </div>
+
+    <div id="pane-model" class="tab-pane" style="display: none;">
+        <div class="panel" style="margin-bottom: 15px;">
+            <h3 style="margin-top: 0;">共用 Prompt (將採用上述「實驗 A」的設定)</h3>
+            <p style="font-size: 14px; color: #666;">點擊按鈕後，將同時測試所有支援模型的回應速度與 API 穩定性。</p>
+        </div>
+        <div class="actions">
+            <button id="lab-run-model-button" class="button-primary">開始測試所有模型</button>
+        </div>
+        <div id="lab-model-output-area" class="output-area"></div>
     </div>
 
     <script src="lab.js"></script>

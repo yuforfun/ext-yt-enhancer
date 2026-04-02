@@ -1,157 +1,296 @@
 // 建議檔名: lab.js
-
-// 功能: [v4.1.2] 驅動 lab.html (Prompt 實驗室) 的所有前端邏輯。
+// 功能: [v4.2.1] 驅動進階實驗室 (Prompt 競技場 & Model 競技場) 的所有前端邏輯。
 // input: DOM 事件 (來自 lab.html)
 // output: 呼叫 background.js API 並將結果渲染到 DOM
-// 其他補充: 新增「一鍵複製」 功能。
+// 其他補充: 包含隱藏的開發者彩蛋、純文字轉 JSON 解析，以及多模型並發測試。
 
-// 【關鍵修正點】: 嚴格遵守護欄 2，所有邏輯包裹在 DOMContentLoaded 內
 document.addEventListener('DOMContentLoaded', () => {
     
-    // DOM 元素獲取
-    const inputJsonEl = document.getElementById('lab-input-json');
+    // --- 1. DOM 元素獲取 ---
+    const headerEl = document.getElementById('lab-header');
+    const inputTextEl = document.getElementById('lab-input-text');
+    
     const customAEl = document.getElementById('lab-custom-a');
     const universalAEl = document.getElementById('lab-universal-a');
     const customBEl = document.getElementById('lab-custom-b');
     const universalBEl = document.getElementById('lab-universal-b');
-    const runButtonEl = document.getElementById('lab-run-button');
-    const outputAreaEl = document.getElementById('lab-output-area');
-    // 【關鍵修正點】: v4.1.2 - 獲取複製按鈕
+    
+    const runPromptBtn = document.getElementById('lab-run-prompt-button');
+    const runModelBtn = document.getElementById('lab-run-model-button');
     const copyButtonEl = document.getElementById('lab-copy-button');
+    
+    const promptOutputArea = document.getElementById('lab-prompt-output-area');
+    const modelOutputArea = document.getElementById('lab-model-output-area');
 
-    // 【關鍵修正點】: v4.1.2 - 用於儲存最後一次成功結果
-    let lastResults = null;
+    let lastPromptResults = null;
 
-    if (!runButtonEl || !customAEl || !copyButtonEl) { // [v4.1.2] 新增 copyButtonEl 檢查
+    if (!runPromptBtn || !customAEl || !copyButtonEl) {
         console.error("Lab UI 關鍵元素未找到。");
-        outputAreaEl.innerHTML = `<p class="status-error">錯誤：lab.html 檔案結構不完整。</p>`;
+        promptOutputArea.innerHTML = `<p class="status-error">錯誤：lab.html 檔案結構不完整。</p>`;
         return;
     }
 
-    // 綁定主執行按鈕
-    runButtonEl.addEventListener('click', runComparison);
-    // 【關鍵修正點】: v4.1.2 - 綁定複製按鈕
-    copyButtonEl.addEventListener('click', handleCopyResults);
+    // --- 2. 事件綁定: 頁籤切換 ---
+    document.getElementById('tab-btn-prompt').addEventListener('click', (e) => {
+        e.target.classList.add('active');
+        document.getElementById('tab-btn-model').classList.remove('active');
+        document.getElementById('pane-prompt').style.display = 'block';
+        document.getElementById('pane-model').style.display = 'none';
+    });
+    
+    document.getElementById('tab-btn-model').addEventListener('click', (e) => {
+        e.target.classList.add('active');
+        document.getElementById('tab-btn-prompt').classList.remove('active');
+        document.getElementById('pane-prompt').style.display = 'none';
+        document.getElementById('pane-model').style.display = 'block';
+    });
 
+    // --- 3. 事件綁定: 彩蛋 (連點 5 次解鎖開發者模式) ---
+    let clickCount = 0;
+    let clickTimer = null;
+    headerEl.addEventListener('click', () => {
+        clickCount++;
+        clearTimeout(clickTimer);
+        if (clickCount >= 5) {
+            document.querySelectorAll('.dev-only').forEach(el => el.style.display = 'block');
+            alert('🔓 開發者模式已解鎖：已顯示底層 Universal Prompt 編輯區。');
+            clickCount = 0;
+        } else {
+            clickTimer = setTimeout(() => clickCount = 0, 800);
+        }
+    });
+
+    // --- 4. 事件綁定: 快捷測試集 ---
+    document.getElementById('btn-load-short').addEventListener('click', () => {
+        inputTextEl.value = "こんにちは世界\nお元気ですか？\nなるほど、そういうことか！";
+    });
+    document.getElementById('btn-load-long').addEventListener('click', () => {
+        inputTextEl.value = "この動画は志尊淳さんと町田啓太さんの主演作品です。\nグラスハートというバンドの物語を描いています。";
+    });
+
+    // --- 5. 事件綁定: 主執行按鈕 ---
+    runPromptBtn.addEventListener('click', runComparison);
+    runModelBtn.addEventListener('click', runModelTest);
+    copyButtonEl.addEventListener('click', handleCopyResults);
 
     /**
      * @function loadInitialPrompts
-     * 功能: [v4.1.1] 頁面載入時，呼叫 API 獲取並填入預設 Prompts
+     * 功能: 頁面載入時，獲取並填入預設 Prompts
      */
     async function loadInitialPrompts() {
-        setLoadingState('正在載入您儲存的預設 Prompts...');
+        setLoadingState(promptOutputArea, '正在載入您儲存的預設 Prompts...');
         try {
             const response = await chrome.runtime.sendMessage({ action: 'getDebugPrompts' });
-            
             if (response && response.success) {
                 customAEl.value = response.savedCustomPrompt || '';
                 customBEl.value = response.savedCustomPrompt || '';
                 universalAEl.value = response.universalPrompt || '';
                 universalBEl.value = response.universalPrompt || '';
-                
-                setInfoState(`預設 Prompts 已載入。請點擊「執行比較翻譯」開始測試...`);
+                setInfoState(promptOutputArea, `預設 Prompts 已載入。請貼上測試句並開始測試...`);
             } else {
-                throw new Error(response?.error || '無法從 background.js 獲取 Prompts。');
+                throw new Error(response?.error || '無法從背景獲取 Prompts。');
             }
         } catch (e) {
-            setErrorState(`載入預設 Prompts 失敗: ${e.message}`);
-        } finally {
-            runButtonEl.disabled = false;
-            runButtonEl.textContent = '執行比較翻譯';
+            setErrorState(promptOutputArea, `載入 Prompts 失敗: ${e.message}`);
         }
     }
 
     /**
-     * @function runComparison
-     * 功能: [v4.1.1-UX] (循序執行版) 執行 Prompt A/B 測試
+     * @function parseInputText
+     * 功能: 將使用者輸入的純文字或 JSON 轉換為字串陣列
      */
+    function parseInputText(rawText) {
+        if (!rawText) throw new Error("輸入不能為空。");
+        if (rawText.trim().startsWith('[')) {
+            return JSON.parse(rawText.trim());
+        } else {
+            return rawText.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+        }
+    }
+
+    // ========================================================================
+    // 模塊 A: Prompt 競技場 (A/B Test)
+    // ========================================================================
     async function runComparison() {
-        console.log('[Lab] 開始執行循序比較...');
-        runButtonEl.disabled = true; 
+        // 功能: 執行 Prompt A/B 測試
+        // input: 無 (讀取 DOM 輸入)
+        // output: 更新 UI 顯示對比結果
+        // 其他補充: 新增動態讀取使用者首選模型的邏輯
+        runPromptBtn.disabled = true; 
         
         let originalTexts;
         try {
-            setInfoState('步驟 1/5: 正在驗證 ASR JSON 輸入...'); 
-            originalTexts = JSON.parse(inputJsonEl.value.trim());
+            setInfoState(promptOutputArea, '步驟 1: 解析輸入文本...'); 
+            originalTexts = parseInputText(inputTextEl.value);
             if (!Array.isArray(originalTexts) || !originalTexts.every(item => typeof item === 'string')) {
-                throw new Error("輸入內容必須是有效的 JSON 字串陣列 (e.g., [\"a\", \"b\"])。");
+                throw new Error("解析結果必須是字串陣列。");
             }
         } catch (e) {
-            setErrorState(`ASR JSON 輸入無效: ${e.message}`);
+            setErrorState(promptOutputArea, `輸入無效: ${e.message}`, runPromptBtn, '執行 A/B 比較翻譯');
             return;
         }
 
-        setInfoState('步驟 2/5: 正在驗證 Prompt 結構...'); 
-        const customA = customAEl.value;
-        const universalA = universalAEl.value;
-        const customB = customBEl.value;
-        const universalB = universalBEl.value;
-
-        const fullPrompt_A = `${customA}\n\n${universalA}`;
-        const fullPrompt_B = `${customB}\n\n${universalB}`;
-
-        const placeholder = '{json_input_text}';
-        if (!fullPrompt_A.includes(placeholder) || !fullPrompt_B.includes(placeholder)) {
-            setErrorState(`Prompt 驗證失敗: Prompt A 和 Prompt B (通用部分) 都必須包含 \`${placeholder}\` 預留位置。`);
-            return;
-        }
+        const fullPrompt_A = `${customAEl.value}\n\n${universalAEl.value}`;
+        const fullPrompt_B = `${customBEl.value}\n\n${universalBEl.value}`;
         
-        setInfoState('步驟 3/5: 正在讀取模型偏好設定...'); 
-        let models_preference = [];
+        // 【關鍵修正點】: 動態讀取設定檔，抓取模型偏好的第 0 個作為測試標的
+        let targetModel = "gemini-3.1-flash-lite-preview"; // 預設值防呆
         try {
             const result = await chrome.storage.local.get(['ytEnhancerSettings']);
-            models_preference = result.ytEnhancerSettings?.models_preference || [
-                "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"
-            ];
+            if (result.ytEnhancerSettings && result.ytEnhancerSettings.models_preference && result.ytEnhancerSettings.models_preference.length > 0) {
+                targetModel = result.ytEnhancerSettings.models_preference[0];
+            }
         } catch (e) {
-            console.warn('[Lab] 讀取模型設定失敗，將使用預設值。', e);
+            console.warn('[Lab] 無法讀取模型設定，將使用預設模型。');
         }
 
         let translationsA = null;
         let translationsB = null;
 
         try {
-            setLoadingState(`步驟 4/5: 正在翻譯 Prompt A... (共 ${originalTexts.length} 句)`); 
-            const resultA = await sendApiRequest(originalTexts, models_preference, fullPrompt_A);
-            if (resultA.error) {
-                throw new Error(`[Prompt A] ${resultA.error}: ${resultA.message || 'API 請求失敗'}`);
-            }
-            translationsA = resultA.data;
-            setSuccessState('Prompt A: 翻譯成功！'); 
+            // 【關鍵修正點】: 在狀態列顯示當前正在使用的模型名稱
+            setLoadingState(promptOutputArea, `正在使用 [${targetModel}] 翻譯 Prompt A...`); 
+            const resA = await sendApiRequest(originalTexts, [targetModel], fullPrompt_A);
+            if (resA.error) throw new Error(`[Prompt A] ${resA.message || resA.error}`);
+            translationsA = resA.data;
+
+            setLoadingState(promptOutputArea, `正在使用 [${targetModel}] 翻譯 Prompt B...`); 
+            const resB = await sendApiRequest(originalTexts, [targetModel], fullPrompt_B);
+            if (resB.error) throw new Error(`[Prompt B] ${resB.message || resB.error}`);
+            translationsB = resB.data;
+
         } catch (e) {
-            console.error('[Lab] Prompt A 執行失敗:', e);
-            setErrorState(`Prompt A 翻譯失敗: ${e.message}`);
+            console.error('[Lab] 翻譯失敗:', e);
+            setErrorState(promptOutputArea, `翻譯失敗: ${e.message}`, runPromptBtn, '執行 A/B 比較翻譯');
             return; 
         }
 
+        lastPromptResults = { originals: originalTexts, translationsA, translationsB };
+        renderPromptResults(originalTexts, translationsA, translationsB);
+        copyButtonEl.style.display = 'inline-block';
+        
+        runPromptBtn.disabled = false;
+        runPromptBtn.textContent = '重新執行比較翻譯';
+    }
+
+    function renderPromptResults(originals, translationsA, translationsB) {
+        let html = `<table>
+            <thead><tr><th width="30%">原文</th><th width="35%">譯文 A (基準)</th><th width="35%">譯文 B (對照)</th></tr></thead>
+            <tbody>`;
+        for (let i = 0; i < originals.length; i++) {
+            const isDiff = translationsA[i] !== translationsB[i];
+            // 【關鍵修正點】: 若譯文 A 與 B 不相同，B 背景變為淡黃色高亮
+            const bgStyle = isDiff ? 'background-color: #fffacd; color: #000;' : 'color: #777;';
+            html += `<tr>
+                <td>${escapeHTML(originals[i])}</td>
+                <td>${escapeHTML(translationsA[i])}</td>
+                <td style="${bgStyle}">${escapeHTML(translationsB[i])}</td>
+            </tr>`;
+        }
+        html += `</tbody></table>`;
+        promptOutputArea.innerHTML = html;
+    }
+
+    async function handleCopyResults() {
+        if (!lastPromptResults) return;
+        const { originals, translationsA, translationsB } = lastPromptResults;
+        let formattedText = '';
+        for (let i = 0; i < originals.length; i++) {
+            formattedText += `${originals[i]}\n`;
+            formattedText += `譯文 A: ${translationsA[i]}\n`;
+            formattedText += `譯文 B: ${translationsB[i]}\n\n`;
+        }
         try {
-            setLoadingState(`步驟 5/5: 正在翻譯 Prompt B... (共 ${originalTexts.length} 句)`); 
-            const resultB = await sendApiRequest(originalTexts, models_preference, fullPrompt_B);
-            if (resultB.error) {
-                throw new Error(`[Prompt B] ${resultB.error}: ${resultB.message || 'API 請求失敗'}`);
-            }
-            translationsB = resultB.data;
-            setSuccessState('Prompt B: 翻譯成功！'); 
+            await navigator.clipboard.writeText(formattedText.trim());
+            const originalText = copyButtonEl.textContent;
+            copyButtonEl.textContent = '已複製！';
+            setTimeout(() => { copyButtonEl.textContent = originalText; }, 2000);
         } catch (e) {
-            console.error('[Lab] Prompt B 執行失敗:', e);
-            setErrorState(`Prompt B 翻譯失敗: ${e.message}`);
+            alert('複製失敗，請檢查權限。');
+        }
+    }
+
+    // ========================================================================
+    // 模塊 B: Model 競技場 (Model Test)
+    // ========================================================================
+    async function runModelTest() {
+        // 功能: 逐一測試指定模型的連線狀態與耗時
+        // input: 無
+        // output: 渲染模型診斷表格
+        // 其他補充: 加長輸出預覽的字數限制
+        const MODELS_TO_TEST = [
+            "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", 
+            "gemini-3-pro-preview", "gemini-3-flash-preview", 
+            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"
+        ];
+        
+        runModelBtn.disabled = true;
+        let originalTexts;
+        try {
+            originalTexts = parseInputText(inputTextEl.value);
+        } catch (e) {
+            setErrorState(modelOutputArea, `輸入無效: ${e.message}`, runModelBtn, '開始測試所有模型');
             return;
         }
 
-        setInfoState('A/B 比較完成，正在渲染表格...');
-        // 【關鍵修正點】: v4.1.2 - 儲存結果並顯示複製按鈕
-        lastResults = { originals: originalTexts, translationsA, translationsB }; // 儲存結果
-        renderResults(originalTexts, translationsA, translationsB);
-        copyButtonEl.style.display = 'inline-block'; // 顯示按鈕
+        const fullPrompt = `${customAEl.value}\n\n${universalAEl.value}`;
         
-        runButtonEl.disabled = false;
-        runButtonEl.textContent = '重新執行比較翻譯';
+        let resultsData = MODELS_TO_TEST.map(m => ({ model: m, status: '等待中...', time: '-', detail: '' }));
+        renderModelTable(resultsData);
+
+        for (let i = 0; i < MODELS_TO_TEST.length; i++) {
+            const modelName = MODELS_TO_TEST[i];
+            resultsData[i].status = '<span style="color: blue;">測試中...</span>';
+            renderModelTable(resultsData);
+
+            const startTime = Date.now();
+            try {
+                const response = await sendApiRequest(originalTexts, [modelName], fullPrompt);
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                resultsData[i].time = `${elapsed}s`;
+
+                if (response.error) {
+                    resultsData[i].status = '<span style="color: red;">❌ 失敗</span>';
+                    resultsData[i].detail = response.message || response.error;
+                } else if (response.data && response.data.length > 0) {
+                    resultsData[i].status = '<span style="color: green;">✅ 成功</span>';
+                    // 【關鍵修正點】: 將 substring 長度從 40 放寬至 150，保留更多可視內容
+                    resultsData[i].detail = escapeHTML(response.data[0]).substring(0, 150) + '...'; 
+                } else {
+                    resultsData[i].status = '<span style="color: orange;">⚠️ 異常</span>';
+                    resultsData[i].detail = '格式錯誤';
+                }
+            } catch (e) {
+                resultsData[i].time = ((Date.now() - startTime) / 1000).toFixed(2) + 's';
+                resultsData[i].status = '<span style="color: red;">❌ 錯誤</span>';
+                resultsData[i].detail = escapeHTML(e.message);
+            }
+            renderModelTable(resultsData);
+        }
+
+        runModelBtn.disabled = false;
+        runModelBtn.textContent = '重新測試所有模型';
     }
 
-    /**
-     * @function sendApiRequest
-     * 功能: [v4.1.1] 封裝單一的 translateBatch API 呼叫 (同 v4.1.1)
-     */
+    function renderModelTable(data) {
+        let html = `<table>
+            <thead><tr><th width="30%">模型名稱</th><th width="15%">狀態</th><th width="15%">耗時</th><th>輸出預覽/錯誤</th></tr></thead>
+            <tbody>`;
+        data.forEach(row => {
+            html += `<tr>
+                <td><strong>${row.model}</strong></td>
+                <td>${row.status}</td>
+                <td>${row.time}</td>
+                <td style="font-size: 0.9em; color: #555;">${row.detail}</td>
+            </tr>`;
+        });
+        html += `</tbody></table>`;
+        modelOutputArea.innerHTML = html;
+    }
+
+    // ========================================================================
+    // 共用輔助函式
+    // ========================================================================
     function sendApiRequest(texts, models_preference, overridePrompt) {
         return chrome.runtime.sendMessage({
             action: 'translateBatch',
@@ -162,125 +301,31 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    /**
-     * @function renderResults
-     * 功能: [v4.1.1] 將對比結果渲染為 HTML 表格 (同 v4.1.1)
-     */
-    function renderResults(originals, translationsA, translationsB) {
-        let tableHtml = `
-            <table>
-                <thead>
-                    <tr>
-                        <th>原文 (ASR)</th>
-                        <th>譯文 A (基準)</th>
-                        <th>譯文 B (實驗)</th>
-                    </tr>
-                </thead>
-                <tbody>
-        `;
+    function setLoadingState(area, message) {
+        area.innerHTML = `<p class="status-loading">${escapeHTML(message)}</p>`;
+    }
 
-        for (let i = 0; i < originals.length; i++) {
-            tableHtml += `
-                <tr>
-                    <td>${escapeHTML(originals[i])}</td>
-                    <td>${escapeHTML(translationsA[i])}</td>
-                    <td>${escapeHTML(translationsB[i])}</td>
-                </tr>
-            `;
+    function setInfoState(area, message) {
+        area.innerHTML = `<p class="status-info">${escapeHTML(message)}</p>`;
+    }
+
+    function setErrorState(area, message, btnEl = null, btnText = '') {
+        area.innerHTML = `<p class="status-error">${escapeHTML(message)}</p>`;
+        if(btnEl) {
+            btnEl.disabled = false;
+            btnEl.textContent = btnText;
         }
-
-        tableHtml += `</tbody></table>`;
-        outputAreaEl.innerHTML = tableHtml;
-    }
-
-    // --- 【關鍵修正點】: v4.1.2 - 新增複製處理函式 ---
-    /**
-     * @function handleCopyResults
-     * 功能: [v4.1.2] 格式化 最後的結果並複製到剪貼簿
-     * input: (來自 DOM 的點擊事件)
-     * output: (寫入 navigator.clipboard)
-     */
-    async function handleCopyResults() {
-        if (!lastResults) {
-            alert('沒有可複製的結果。');
-            return;
-        }
-
-        const { originals, translationsA, translationsB } = lastResults;
-        let formattedText = '';
-
-        // 【關鍵修正點】: 依照規格書 要求的格式 進行拼接
-        for (let i = 0; i < originals.length; i++) {
-            formattedText += `${originals[i]}\n`;
-            formattedText += `譯文 A: ${translationsA[i]}\n`;
-            formattedText += `譯文 B: ${translationsB[i]}\n\n`;
-        }
-
-        try {
-            await navigator.clipboard.writeText(formattedText.trim());
-            
-            // UI 反饋
-            const originalText = copyButtonEl.textContent;
-            copyButtonEl.textContent = '已複製！';
-            copyButtonEl.disabled = true;
-            setTimeout(() => {
-                copyButtonEl.textContent = originalText;
-                copyButtonEl.disabled = false;
-            }, 2000);
-
-        } catch (e) {
-            console.error('複製失敗:', e);
-            alert('複製失敗，請檢查主控台權限。');
-        }
-    }
-
-
-    // --- v4.1.2 - UI 輔助函式 (已更新) ---
-
-    // 清除狀態並設定按鈕
-    function resetUI(message) {
-        outputAreaEl.innerHTML = ''; 
-        runButtonEl.disabled = true;
-        runButtonEl.textContent = message;
-        // 【關鍵修正點】: v4.1.2 - 隱藏複製按鈕並清除暫存
-        copyButtonEl.style.display = 'none';
-        lastResults = null;
-    }
-
-    // 用於顯示「執行中」
-    function setLoadingState(message) {
-        resetUI(message);
-        outputAreaEl.innerHTML = `<p class="status-loading">${escapeHTML(message)}</p>`;
-    }
-
-    // 用於顯示「資訊」 (例如：載入完成)
-    function setInfoState(message) {
-        resetUI(message);
-        outputAreaEl.innerHTML = `<p class="status-info">${escapeHTML(message)}</p>`;
-    }
-
-    // (注意: 成功時不重設按鈕，因為流程尚未結束)
-    function setSuccessState(message) {
-        outputAreaEl.innerHTML += `<p class="status-success">${escapeHTML(message)}</p>`;
-    }
-
-    // 用於顯示「永久失敗」 (流程結束)
-    function setErrorState(message) {
-        resetUI(message); 
-        outputAreaEl.innerHTML = `<p class="status-error">${escapeHTML(message)}</p>`;
-        runButtonEl.disabled = false; 
-        runButtonEl.textContent = '執行比較翻譯';
     }
     
     function escapeHTML(str) {
         if (!str) return '';
-        return str.replace(/&/g, '&amp;')
+        return String(str).replace(/&/g, '&amp;')
                   .replace(/</g, '&lt;')
                   .replace(/>/g, '&gt;')
                   .replace(/"/g, '&quot;')
                   .replace(/'/g, '&#039;');
     }
     
-    // 啟動時呼叫 API 載入預設 Prompts
+    // 啟動載入
     loadInitialPrompts();
 });
