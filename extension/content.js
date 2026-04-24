@@ -168,7 +168,7 @@ class YouTubeSubtitleEnhancer {
             } else {
                 const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
                 const cachedData = await this.getCache(cacheKey);
-                if (cachedData && cachedData.translatedTrack) {
+                if (cachedData && cachedData.translatedTrack && cachedData.sourceLang === lang) {
                     this._log('[決策] Tier 2 發現有效快取，直接載入。');
                     this.state.translatedTrack = cachedData.translatedTrack;
                     this.activate(cachedData.rawPayload, cachedData.vssId || '');
@@ -628,7 +628,7 @@ class YouTubeSubtitleEnhancer {
         const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
         const cachedData = await this.getCache(cacheKey);
 
-        if (cachedData && cachedData.translatedTrack) {
+        if (cachedData && cachedData.translatedTrack && cachedData.sourceLang === this.state.sourceLang) {
             this._log('[Tier 3->2] 發現快取，直接載入。');
             this.state.translatedTrack = cachedData.translatedTrack;
             this.state.hasActivated = true;
@@ -1146,8 +1146,8 @@ class YouTubeSubtitleEnhancer {
                 await this.setCache(cacheKey, {
                     translatedTrack: this.state.translatedTrack,
                     rawPayload: this.state.rawPayload,
-                    // 將 vssId 存入快取
-                    vssId: this.state.currentVssId || '' // 從 state 讀取
+                    vssId: this.state.currentVssId || '',
+                    sourceLang: this.state.sourceLang || ''
                 });
                 this._log(`批次完成 (${currentDoneCount}/${this.state.translationProgress.total})，進度已暫存。`);
             }
@@ -1435,7 +1435,8 @@ class YouTubeSubtitleEnhancer {
             await this.setCache(`yt-enhancer-cache-${this.currentVideoId}`, {
                 translatedTrack: this.state.translatedTrack,
                 rawPayload: this.state.rawPayload,
-                vssId: this.state.currentVssId || '' // 從 state 讀取
+                vssId: this.state.currentVssId || '',
+                sourceLang: this.state.sourceLang || ''
             });
             this.handleTimeUpdate(); // 立即刷新當前字幕
             this._log('[插隊重試] 成功，快取已更新。');
