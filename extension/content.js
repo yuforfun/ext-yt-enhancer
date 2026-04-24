@@ -26,7 +26,7 @@ const HQS_CONNECTIVE_PARTICLES_TO_MERGE = new Set([
     'に', 'を', 'は', 'で', 'て', 'と', 'も', 'の' ,'本当','やっぱ','ども','お'
 ]);
 // HQS 多 Seg 事件比例閾值
-const HQS_MULTI_SEG_THRESHOLD = 0.35; // 70% (可調整 0.0 - 1.0)
+const HQS_MULTI_SEG_THRESHOLD = 0.35; // 35% (可調整 0.0 - 1.0)
 // --- HQS 引擎常數結束 ---
 
 class YouTubeSubtitleEnhancer {
@@ -211,7 +211,7 @@ class YouTubeSubtitleEnhancer {
                 }
                 break;
 
-            case 'TIMEDTEXT_DATA':
+            case 'TIMEDTEXT_DATA': {
                 // 從 payload 解構出 vssId
                 const { payload: timedTextPayload, lang, vssId } = payload;
                 this._log(`收到 [${lang}] (vssId: ${vssId || 'N/A'}) 的 TIMEDTEXT_DATA。`);
@@ -341,6 +341,7 @@ class YouTubeSubtitleEnhancer {
                 }
             }
             break;
+        }
         }
     }
 

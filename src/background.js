@@ -129,15 +129,6 @@ const LAST_SUCCESSFUL_KEY_ID = 'lastSuccessfulKeyId';
 // 初始化全域實例
 const globalCircuitBreaker = new CircuitBreaker();
 
-const sessionData = {
-// 功能: 一個在記憶體中運行的全域變數，用於儲存與特定分頁 (Tab) 相關的臨時資料。
-//      它會在瀏覽器關閉時被清除。
-// input: 由 content.js 和 injector.js 寫入。
-// output: 供 content.js 和 popup.js 讀取。
-// 其他補充: lastPlayerData 作為一個「信箱」，解決了 injector.js 和 content.js 之間因載入時序不同而造成的通訊問題。
-};
-
-
 
 // 功能: 定義擴充功能的預設設定值。
 // input: 無 (靜態物件)
@@ -408,7 +399,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             }
             break;
 
-        case 'setCache':
+        case 'setCache': {
             // 功能: 將資料透過 chrome.storage.local 存入指定 key 的暫存。
             // input: key (字串) - 暫存鍵值。
             //        data (物件) - 要暫存的資料。
@@ -429,6 +420,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                 sendResponse({ success: false });
             }
             break;
+        }
 
         case 'getSettings':
             // 功能: 從 chrome.storage 讀取使用者設定，若無則回傳預設值。
