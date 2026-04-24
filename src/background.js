@@ -37,6 +37,7 @@ const SAFETY_SETTINGS = [
 ];
 
 const API_KEY_COOLDOWN_SECONDS = 60; // 金鑰因配額失敗後的冷卻時間（秒）
+const CACHE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 快取有效期（365 天）
 
 // **「新使用者」的「初始預設值」
 const DEFAULT_CUSTOM_PROMPTS = {
@@ -418,6 +419,29 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                          sendResponse({ success: false });
                     });
             });
+            break;
+
+        case 'purgeExpiredCache':
+            // 功能: 掃描並清除所有已超過 TTL 的過期快取項目。
+            // input from: 定期清理呼叫
+            // output to: sendResponse({ success: true, purgedCount })
+            isAsync = true;
+            (async () => {
+                const items = await chrome.storage.local.get(null);
+                const now = Date.now();
+                const expiredKeys = Object.entries(items)
+                    .filter(([key, val]) =>
+                        key.startsWith('yt-enhancer-cache-') &&
+                        val?.cachedAt &&
+                        (now - val.cachedAt) > CACHE_TTL_MS
+                    )
+                    .map(([key]) => key);
+
+                if (expiredKeys.length > 0) {
+                    await chrome.storage.local.remove(expiredKeys);
+                }
+                sendResponse({ success: true, purgedCount: expiredKeys.length });
+            })();
             break;
 
         case 'getCache':

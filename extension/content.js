@@ -21,6 +21,8 @@ const HQS_LINGUISTIC_MARKERS = [
     '。', '？', '！'
 ];
 
+const CACHE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 365 天快取有效期
+
 // 使用 Set 物件以優化查找效能
 const HQS_CONNECTIVE_PARTICLES_TO_MERGE = new Set([
     'に', 'を', 'は', 'で', 'て', 'と', 'も', 'の' ,'本当','やっぱ','ども','お'
@@ -456,10 +458,20 @@ class YouTubeSubtitleEnhancer {
     }
 
     async getCache(key) {
-        // 功能: 從 background.js 獲取指定 key 的暫存資料。
+        // 功能: 從 background.js 獲取指定 key 的暫存資料，並驗證 TTL。
         try {
             const response = await this.sendMessageToBackground({ action: 'getCache', key });
-            return response?.data;
+            const cached = response?.data;
+            if (!cached) return null;
+
+            // TTL 驗證：若快取超過 7 天則視為無效（向下相容：無 cachedAt 欄位時不報錯）
+            if (cached.cachedAt && (Date.now() - cached.cachedAt) > CACHE_TTL_MS) {
+                this._log(`[Cache] 快取已過期（存入於 ${new Date(cached.cachedAt).toLocaleDateString()}），清除並重新翻譯。`);
+                await this.setCache(key, null);
+                return null;
+            }
+
+            return cached;
         } catch (e) {
             this._log('❌ 讀取暫存失敗:', e);
             return null;
@@ -467,9 +479,10 @@ class YouTubeSubtitleEnhancer {
     }
 
     async setCache(key, data) {
-        // 功能: 將資料透過 background.js 存入指定 key 的暫存。
+        // 功能: 將資料透過 background.js 存入指定 key 的暫存，並附加時間戳。
         try {
-            await this.sendMessageToBackground({ action: 'setCache', key, data });
+            const dataWithTimestamp = data ? { ...data, cachedAt: Date.now() } : null;
+            await this.sendMessageToBackground({ action: 'setCache', key, data: dataWithTimestamp });
         } catch (e) {
             this._log('❌ 寫入暫存失敗:', e);
         }
