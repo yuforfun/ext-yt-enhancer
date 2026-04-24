@@ -7,7 +7,7 @@
  */
 
 // 偵錯模式開關和計時器
-const DEBUG_MODE = false;
+const DEBUG_MODE = true;
 const scriptStartTime = performance.now();
 
 // 植入 HQS (高品質分句) 引擎常數
@@ -88,8 +88,7 @@ class YouTubeSubtitleEnhancer {
         this.requestIntervalId = setInterval(sendRequest, 200);
     }
 
-    // 功能: (vssId 驗證版) 主流程入口，在發出指令前鎖定目標 vssId。
-    // TIER 1 檢查邏輯尊重使用者排序
+    // 功能: 主流程入口，依 Tier 1 → Tier 2 → Tier 3 優先序選出目標語言，統一呼叫 _runTierDecision。
     async start() {
         this._log(`[決策] --- 主流程 Start ---`);
         if (!this.currentVideoId || !this.state.playerResponse) {
@@ -98,84 +97,126 @@ class YouTubeSubtitleEnhancer {
         }
 
         const availableTracks = this.getAvailableLanguagesFromData(this.state.playerResponse, true);
-        const availableLangs = availableTracks.map(t => t.languageCode);
-        this._log(`[決策] 可用語言: [${availableLangs.join(', ')}]`);
+        if (availableTracks.length === 0) {
+            this._log('[決策] 無可用字幕軌道，停止。');
+            return;
+        }
 
-        // 讀取 Tier 1/2 設定
         const { native_langs = [], auto_translate_priority_list = [] } = this.settings;
+        this._log(`[決策] 可用語言: [${availableTracks.map(t => t.languageCode).join(', ')}]`);
         this._log(`[決策] Tier 1 (原文): [${native_langs.join(', ')}]`);
         this._log(`[決策] Tier 2 (自動): [${auto_translate_priority_list.map(t => t.langCode).join(', ')}]`);
 
-        // Tier 1/2 檢查邏輯
-        // --- TIER 1 檢查 (使用 checkLangEquivalency) ---
-        let nativeMatch = null;
-        const orderedNativeLangs = this.settings.native_langs || [];
-        
-        // 遍歷使用者偏好的 Tier 1 順序
-        for (const preferredLang of orderedNativeLangs) { // e.g., 'zh-Hant'
-            // 檢查影片是否提供此語言 (使用等價性檢查)
-            const matchingVideoLang = availableLangs.find(videoLang => this.checkLangEquivalency(videoLang, preferredLang)); // e.g., 'zh-TW' matches 'zh-Hant'
-            
-            if (matchingVideoLang) {
-                nativeMatch = matchingVideoLang; // 儲存影片實際的語言代碼 (e.g., 'zh-TW')
-                break; // 停止搜尋
-            }
-        }
-        
-        if (nativeMatch) {
-            this._log(`[決策] -> Tier 1 命中：匹配到最高優先級原文 (${nativeMatch})。`); 
-            const trackToEnable = availableTracks.find(t => t.languageCode === nativeMatch); 
-            if (trackToEnable) this.runTier1_NativeView(trackToEnable); 
-            return; // 流程結束
+        let targetLang = null;
+
+        // Tier 1 優先：母語原文
+        for (const nl of native_langs) {
+            const match = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, nl));
+            if (match) { targetLang = match.languageCode; break; }
         }
 
-        // --- TIER 2 檢查 (使用 checkLangEquivalency) ---
-        let tier2Match = null;
-        for (const priorityItem of auto_translate_priority_list) {
-            // 檢查影片是否提供此語言 (使用等價性檢查)
-            const matchingVideoLang = availableLangs.find(videoLang => this.checkLangEquivalency(videoLang, priorityItem.langCode));
-            
-            if (matchingVideoLang) {
-                tier2Match = availableTracks.find(t => t.languageCode === matchingVideoLang); // 獲取完整的軌道物件
-                break; // 找到第一個匹配的，停止搜尋
+        // Tier 2 次之：自動翻譯
+        if (!targetLang) {
+            for (const item of auto_translate_priority_list) {
+                const match = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, item.langCode));
+                if (match) { targetLang = match.languageCode; break; }
             }
         }
-        
-        if (tier2Match) {
-            this._log(`[決策] -> Tier 2 命中：匹配到自動翻譯語言 (${tier2Match.languageCode})。`);
-            
-            this.state.sourceLang = tier2Match.languageCode;
-            this._log('[意圖鎖定] 已將期望語言 sourceLang 設為:', this.state.sourceLang);
-            
-            const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
-            const cachedData = await this.getCache(cacheKey);
 
-            if (cachedData && cachedData.translatedTrack) {
-                this._log('[決策] 發現有效暫存，直接載入。');
-                this.state.translatedTrack = cachedData.translatedTrack;
-                // 從快取讀取 vssId 並傳遞
-                const vssIdFromCache = cachedData.vssId || ''; // 添加 fallback
-                this.activate(cachedData.rawPayload, vssIdFromCache); // 觸發翻譯
+        // Tier 3 fallback：按需翻譯
+        if (!targetLang) {
+            const nonAutoTrack = availableTracks.find(t => !t.vssId.startsWith('a.'));
+            targetLang = (nonAutoTrack || availableTracks[0])?.languageCode;
+        }
+
+        if (!targetLang) {
+            this._log('[決策] 所有 Tier 都無法匹配語言，停止。');
+            return;
+        }
+
+        this.state.sourceLang = targetLang;
+        await this._runTierDecision(targetLang, null, '', availableTracks);
+    }
+
+    async _runTierDecision(lang, timedTextPayload, vssId = '', availableTracks) {
+        const { native_langs = [], auto_translate_priority_list = [] } = this.settings;
+
+        // --- Tier 1: 原文顯示 ---
+        const isTier1 = native_langs.some(sl => this.checkLangEquivalency(lang, sl));
+        if (isTier1) {
+            this._log(`[決策] Tier 1 命中 (${lang})`);
+            this.state.isNativeView = true;
+            if (timedTextPayload) {
+                this.activateNativeView(timedTextPayload, vssId);
             } else {
-                this._log(`[決策] 無暫存，命令特工啟用軌道 [${tier2Match.languageCode}]...`);
-                this.state.targetVssId = tier2Match.vssId;
-                this._log(`[鎖定] 已鎖定目標 vssId: ${this.state.targetVssId}`);
-                this.state.activationWatchdog = setTimeout(() => this.handleActivationFailure(), 3000);
-                window.postMessage({ from: 'YtEnhancerContent', type: 'FORCE_ENABLE_TRACK', payload: tier2Match }, '*');
+                const trackToEnable = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, lang));
+                if (trackToEnable) this.runTier1_NativeView(trackToEnable);
             }
-            return; // 流程結束
+            return;
         }
 
-        // --- TIER 3 檢查：按需翻譯 (Fallback) ---
-        // 優先選擇非 'a.' (自動) 的軌道
-        const nonAutoTrack = availableTracks.find(t => !t.vssId.startsWith('a.'));
-        const fallbackTrack = nonAutoTrack || availableTracks[0];
+        // --- Tier 2: 自動翻譯 ---
+        const tier2Config = auto_translate_priority_list.find(item => this.checkLangEquivalency(lang, item.langCode));
+        if (tier2Config) {
+            this._log(`[決策] Tier 2 命中 (${lang})`);
+            this.state.isNativeView = false;
+            document.getElementById('enhancer-ondemand-button')?.remove();
+            this.state.onDemandButton = null;
 
-        if (fallbackTrack) {
-            this._log(`[決策] -> Tier 3 觸發：進入按需翻譯模式 (${fallbackTrack.languageCode})。`);
-            this.runTier3_OnDemand(fallbackTrack);
+            if (timedTextPayload) {
+                this.activate(timedTextPayload, vssId);
+            } else {
+                const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
+                const cachedData = await this.getCache(cacheKey);
+                if (cachedData && cachedData.translatedTrack) {
+                    this._log('[決策] Tier 2 發現有效快取，直接載入。');
+                    this.state.translatedTrack = cachedData.translatedTrack;
+                    this.activate(cachedData.rawPayload, cachedData.vssId || '');
+                    // 快取路徑仍需送出 FORCE_ENABLE_TRACK，讓 watchdog 過濾掉
+                    // YouTube 播放器自然送出的非目標語言 TIMEDTEXT_DATA（例如 zh）
+                    const trackToEnable = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, lang));
+                    if (trackToEnable) {
+                        this.state.targetVssId = trackToEnable.vssId;
+                        this._log(`[鎖定] 已鎖定目標 vssId: ${this.state.targetVssId}`);
+                        this.state.activationWatchdog = setTimeout(() => this.handleActivationFailure(), 3000);
+                        window.postMessage({ from: 'YtEnhancerContent', type: 'FORCE_ENABLE_TRACK', payload: trackToEnable }, '*');
+                    }
+                } else {
+                    const trackToEnable = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, lang));
+                    if (trackToEnable) {
+                        this.state.targetVssId = trackToEnable.vssId;
+                        this._log(`[鎖定] 已鎖定目標 vssId: ${this.state.targetVssId}`);
+                        this.state.activationWatchdog = setTimeout(() => this.handleActivationFailure(), 3000);
+                        window.postMessage({ from: 'YtEnhancerContent', type: 'FORCE_ENABLE_TRACK', payload: trackToEnable }, '*');
+                    }
+                }
+            }
+            return;
+        }
+
+        // --- Tier 3: 按需翻譯 (Fallback) ---
+        this._log(`[決策] Tier 3 觸發 (${lang})`);
+        if (timedTextPayload) {
+            const trackToEnable = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, lang));
+            const playerContainer = document.getElementById('movie_player');
+            if (playerContainer && !document.getElementById('enhancer-ondemand-button')) {
+                const btn = document.createElement('div');
+                btn.id = 'enhancer-ondemand-button';
+                btn.innerHTML = '翻譯';
+                btn.title = `將 ${this.getFriendlyLangName(lang)} 翻譯為中文`;
+                this.handleOnDemandTranslateClick = this.handleOnDemandTranslateClick.bind(this);
+                btn.addEventListener('click', () =>
+                    this.handleOnDemandTranslateClick(trackToEnable || { languageCode: lang, vssId })
+                );
+                playerContainer.appendChild(btn);
+                this.state.onDemandButton = btn;
+            }
+            this.state.isNativeView = true;
+            this.activateNativeView(timedTextPayload, vssId);
         } else {
-            this._log(`[決策] -> 無任何可用字幕，停止。`);
+            const nonAutoTrack = availableTracks.find(t => !t.vssId.startsWith('a.'));
+            const fallbackTrack = nonAutoTrack || availableTracks[0];
+            if (fallbackTrack) this.runTier3_OnDemand(fallbackTrack);
         }
     }
 
@@ -276,72 +317,13 @@ class YouTubeSubtitleEnhancer {
                 }
 
                 // 步驟 3: 執行激活流程 (適用於「首次激活」或「語言切換後的再激活」)
-            if (!this.state.hasActivated) {
-                    this._log(`[決策/手動] 收到語言 [${lang}]，執行三層決策樹...`);
-
-                    const playerResponse = this.state.playerResponse;
-                    const availableTracks = this.getAvailableLanguagesFromData(playerResponse, true);
-                    const { native_langs = [], auto_translate_priority_list = [] } = this.settings;
-
-                this.state.sourceLang = lang;
-                this.state.hasActivated = true;
-                this._log(`狀態更新: hasActivated -> true`);
-
-                // 1. 執行 Tier 1 檢查
-                const isTier1Match = native_langs.some(settingLang => this.checkLangEquivalency(lang, settingLang));
-
-                if (isTier1Match) {
-                    this._log(`[決策/手動] -> Tier 1 命中 (${lang})。`);
-                    this.state.isNativeView = true;
-                    // 傳遞 vssId
-                    this.activateNativeView(timedTextPayload, vssId);
-                    return; // Tier 1 流程結束
+                if (!this.state.hasActivated) {
+                    this.state.sourceLang = lang;
+                    this.state.hasActivated = true;
+                    this._log(`狀態更新: hasActivated -> true`);
+                    const availableTracks = this.getAvailableLanguagesFromData(this.state.playerResponse, true);
+                    await this._runTierDecision(lang, timedTextPayload, vssId, availableTracks);
                 }
-
-                // 2. 執行 Tier 2 檢查
-                const tier2Config = auto_translate_priority_list.find(item => this.checkLangEquivalency(lang, item.langCode));
-                if (tier2Config) {
-                    this._log(`[決策] -> Tier 2 命中 (${lang})。`);
-                    this.state.isNativeView = false; 
-                        document.getElementById('enhancer-ondemand-button')?.remove(); 
-                        this.state.onDemandButton = null;
-
-                    // 傳遞 vssId
-                    this.activate(timedTextPayload, vssId); // 觸發完整翻譯
-                    return; // Tier 2 流程結束
-                }
-
-                // 3. 執行 Tier 3 (Fallback)
-                this._log(`[決策/手動] -> Tier 3 觸發 (${lang})。`);
-                const trackToEnable = availableTracks.find(t => this.checkLangEquivalency(t.languageCode, lang));
-
-                if (trackToEnable) {
-                         // 1. 建立按鈕
-                        const playerContainer = document.getElementById('movie_player');
-                        if (playerContainer && !document.getElementById('enhancer-ondemand-button')) {
-                            const btn = document.createElement('div');
-                            btn.id = 'enhancer-ondemand-button';
-                            btn.innerHTML = '翻譯'; 
-                            btn.title = `將 ${this.getFriendlyLangName(trackToEnable.languageCode)} 翻譯為中文`;
-                            this.handleOnDemandTranslateClick = this.handleOnDemandTranslateClick.bind(this);
-                            btn.addEventListener('click', () => this.handleOnDemandTranslateClick(trackToEnable));
-                            playerContainer.appendChild(btn);
-                            this.state.onDemandButton = btn; // 儲存參照
-                        }
-                        
-                     // 2. 顯示原文
-                     this.state.isNativeView = true;
-                     // 傳遞 vssId
-                     this.activateNativeView(timedTextPayload, vssId);
-                } else {
-                        // 兜底：找不到軌道物件 (例如 playerResponse 中只有 zh-Hant，但 timedtext 卻回傳 en)
-                        // 這種情況極不可能發生，但如果發生了，我們也不應該觸發翻譯。
-                         this._log(`[決策/手動] 找不到 ${lang} 的軌道物件，但收到了字幕。執行 Tier 3 (僅原文)。`);
-                     this.state.isNativeView = true;
-                     // 傳遞 vssId
-                     this.activateNativeView(timedTextPayload, vssId);
-                }
-            }
             break;
         }
         }
@@ -547,10 +529,14 @@ class YouTubeSubtitleEnhancer {
         
         this._log('❌ [看門狗] 自動啟用字幕超時！');
         this.state.activationWatchdog = null;
-        // 失敗時也要清除鎖定，以便後續手動操作能正常運作
-        this.state.targetVssId = null; 
+        this.state.targetVssId = null;
 
-        // 【關鍵修正點】: 確保 Orb 存在並切換至 cc-failed 狀態，不再向字幕容器插入 HTML
+        // 若已有快取翻譯資料（從快取載入後啟用的 watchdog），不顯示 cc-failed 狀態
+        if (this.state.translatedTrack) {
+            this._log('[看門狗] 已有翻譯資料，跳過失敗狀態顯示。');
+            return;
+        }
+
         const playerContainer = document.getElementById('movie_player');
         if (playerContainer) {
             this.createStatusOrb(playerContainer);
