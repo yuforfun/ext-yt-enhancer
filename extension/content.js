@@ -168,7 +168,7 @@ class YouTubeSubtitleEnhancer {
             } else {
                 const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
                 const cachedData = await this.getCache(cacheKey);
-                if (cachedData && cachedData.translatedTrack && cachedData.sourceLang === lang) {
+                if (cachedData && cachedData.translatedTrack && (!cachedData.sourceLang || cachedData.sourceLang === lang)) {
                     this._log('[決策] Tier 2 發現有效快取，直接載入。');
                     this.state.translatedTrack = cachedData.translatedTrack;
                     this.activate(cachedData.rawPayload, cachedData.vssId || '');
@@ -628,7 +628,7 @@ class YouTubeSubtitleEnhancer {
         const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
         const cachedData = await this.getCache(cacheKey);
 
-        if (cachedData && cachedData.translatedTrack && cachedData.sourceLang === this.state.sourceLang) {
+        if (cachedData && cachedData.translatedTrack && (!cachedData.sourceLang || cachedData.sourceLang === this.state.sourceLang)) {
             this._log('[Tier 3->2] 發現快取，直接載入。');
             this.state.translatedTrack = cachedData.translatedTrack;
             this.state.hasActivated = true;
