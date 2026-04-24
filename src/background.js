@@ -359,6 +359,15 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                     } 
                 } 
 
+                // 本輪嘗試後，重新確認是否所有 key/model 組合的 breaker 均已開啟
+                // (單一 key 在本輪被 trip 後 allKeysDeadToday 仍為 false，需在此補正)
+                if (!allKeysDeadToday) {
+                    const stillAlive = models_preference.some(m =>
+                        apiKeys.some(k => !globalCircuitBreaker.isOpen(k.id, m).isOpen)
+                    );
+                    if (!stillAlive) allKeysDeadToday = true;
+                }
+
                 if (allKeysDeadToday) {
                     sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: 3600, reason: 'QUOTA_EXHAUSTED' });
                 } else if (lastError && lastError.type === 'BATCH_FAILURE') {
