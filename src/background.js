@@ -76,15 +76,15 @@ const EXAMPLE_CUSTOM_PROMPTS = {
 class CircuitBreaker {
     constructor() {
         this.state = new Map(); // Key: "keyId::modelId", Value: timestamp (cooldown until)
-        this.loadFromStorage();
+        this._readyPromise = this._loadFromStorage();
     }
 
-    async loadFromStorage() {
+    async _loadFromStorage() {
         try {
             const result = await chrome.storage.session.get({ 'circuitBreakerState': {} });
-            // 將 Object 轉換回 Map
+            const now = Date.now();
             for (const [k, v] of Object.entries(result.circuitBreakerState)) {
-                if (v > Date.now()) { // 只載入尚未過期的冷卻
+                if (v > now) {
                     this.state.set(k, v);
                 }
             }
@@ -93,7 +93,11 @@ class CircuitBreaker {
         }
     }
 
-    async saveToStorage() {
+    ensureLoaded() {
+        return this._readyPromise;
+    }
+
+    async _saveToStorage() {
         try {
             const obj = Object.fromEntries(this.state);
             await chrome.storage.session.set({ 'circuitBreakerState': obj });
@@ -109,7 +113,6 @@ class CircuitBreaker {
     isOpen(keyId, modelId) {
         const uid = this.getUniqueId(keyId, modelId);
         const cooldownUntil = this.state.get(uid);
-        // 如果冷卻時間存在且大於現在，代表斷路器開啟 (Open/Tripped) -> 不可用
         if (cooldownUntil && cooldownUntil > Date.now()) {
             return { isOpen: true, remaining: Math.ceil((cooldownUntil - Date.now()) / 1000) };
         }
@@ -118,15 +121,36 @@ class CircuitBreaker {
 
     trip(keyId, modelId, penaltyMs) {
         const uid = this.getUniqueId(keyId, modelId);
-        const until = Date.now() + penaltyMs;
-        this.state.set(uid, until);
-        this.saveToStorage(); // 非同步寫入，不阻塞主流程
+        this.state.set(uid, Date.now() + penaltyMs);
+        this._saveToStorage();
     }
 }
 // Session Storage 鍵值，用於儲存 Key 黏著性
 const LAST_SUCCESSFUL_KEY_ID = 'lastSuccessfulKeyId';
+
+// 記憶體快取，避免每次 reorder 都讀 session storage
+let _lastSuccessfulKeyIdCache = null;
+
 // 初始化全域實例
 const globalCircuitBreaker = new CircuitBreaker();
+
+// SDK Client 快取，以 keyInfo.id 為索引，避免重複建構
+const _clientCache = new Map();
+
+function getOrCreateClient(keyInfo) {
+    if (!_clientCache.has(keyInfo.id)) {
+        _clientCache.set(keyInfo.id, new GoogleGenAI({ apiKey: keyInfo.key }));
+    }
+    return _clientCache.get(keyInfo.id);
+}
+
+function invalidateClientCache(keyId) {
+    if (keyId) {
+        _clientCache.delete(keyId);
+    } else {
+        _clientCache.clear();
+    }
+}
 
 
 // 功能: 定義擴充功能的預設設定值。
@@ -167,6 +191,16 @@ const defaultSettings = {
     hqsEnabledForJa: false
 };
 
+
+// Service Worker 啟動時，從 session storage 恢復 key 黏著性快取
+(async () => {
+    try {
+        const result = await chrome.storage.session.get({ [LAST_SUCCESSFUL_KEY_ID]: null });
+        _lastSuccessfulKeyIdCache = result[LAST_SUCCESSFUL_KEY_ID];
+    } catch (e) {
+        // 非關鍵初始化，靜默失敗
+    }
+})();
 
 chrome.runtime.onInstalled.addListener(async () => {
 // 區塊: chrome.runtime.onInstalled.addListener
@@ -220,8 +254,10 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             isAsync = true;
 
             (async () => {
+                await globalCircuitBreaker.ensureLoaded();
+
                 const { texts, source_lang, models_preference, overridePrompt } = request;
-                
+
                 if (!texts || texts.length === 0) {
                     sendResponse({ data: [] });
                     return;
@@ -233,8 +269,8 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                     sendResponse({ error: 'PERMANENT_FAILURE', message: '未設定 API Key' });
                     return;
                 }
-                
-                apiKeys = await reorderKeysByStickiness(apiKeys); 
+
+                apiKeys = reorderKeysByStickiness(apiKeys);
 
                 // 準備 Prompt
                 const jsonInputText = JSON.stringify(texts);
@@ -265,7 +301,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                         allKeysDeadToday = false; 
 
                         try {
-                            const client = new GoogleGenAI({ apiKey: keyInfo.key });
+                            const client = getOrCreateClient(keyInfo);
                             
                             const response = await client.models.generateContent({
                                 model: modelName,
@@ -293,7 +329,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                             const translatedList = JSON.parse(jsonMatch[0]);
 
                             if (Array.isArray(translatedList) && translatedList.length === texts.length) {
-                                await chrome.storage.session.set({ [LAST_SUCCESSFUL_KEY_ID]: keyId }); 
+                                await recordSuccessfulKey(keyId);
                                 sendResponse({ data: translatedList });
                                 return; 
                             } else {
@@ -459,6 +495,9 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             isAsync = true;
             chrome.storage.local.set({ 'ytEnhancerSettings': request.data })
                 .then(() => {
+                    if (request.data.userApiKeys !== undefined) {
+                        invalidateClientCache();
+                    }
                     sendResponse({ success: true });
                     chrome.tabs.query({ url: "*://www.youtube.com/*" }, (tabs) => {
                         for (const tab of tabs) {
@@ -687,26 +726,30 @@ function parseErrorAndTrip(error, keyInfo, modelName) {
 }
 
 // Key 黏著性的輔助函式
-// 功能: 讀取上一次成功的 Key ID，並將其移到 Key 陣列的第一位。
+// 功能: 使用記憶體快取將上一次成功的 Key 移到陣列首位，不進行 storage I/O。
 // input: apiKeys (Array) - 原始 Key 陣列。
 // output: (Array) - 排序後的 Key 陣列。
-async function reorderKeysByStickiness(apiKeys) {
+function reorderKeysByStickiness(apiKeys) {
     if (!apiKeys || apiKeys.length <= 1) return apiKeys;
-    
-    // 讀取上一次成功的 Key ID
-    const result = await chrome.storage.session.get({ [LAST_SUCCESSFUL_KEY_ID]: null });
-    const lastSuccessfulId = result[LAST_SUCCESSFUL_KEY_ID];
-    
-    if (!lastSuccessfulId) return apiKeys;
 
-    const stickIndex = apiKeys.findIndex(key => key.id === lastSuccessfulId);
+    const lastId = _lastSuccessfulKeyIdCache;
+    if (!lastId) return apiKeys;
 
-    if (stickIndex > 0) {
-        // 找到 Key，將其移動到第一個位置
-        const stickyKey = apiKeys.splice(stickIndex, 1)[0];
-        apiKeys.unshift(stickyKey);
-        // console.log(`[Stickiness] Key ${lastSuccessfulId} 移至首位`);
+    const idx = apiKeys.findIndex(k => k.id === lastId);
+    if (idx <= 0) return apiKeys;
+
+    const reordered = [...apiKeys];
+    const [stickyKey] = reordered.splice(idx, 1);
+    reordered.unshift(stickyKey);
+    return reordered;
+}
+
+// 記錄成功 key，同時更新記憶體快取與 session storage。
+async function recordSuccessfulKey(keyId) {
+    _lastSuccessfulKeyIdCache = keyId;
+    try {
+        await chrome.storage.session.set({ [LAST_SUCCESSFUL_KEY_ID]: keyId });
+    } catch (e) {
+        console.error('[Background] recordSuccessfulKey failed:', e);
     }
-    
-    return apiKeys;
 }
