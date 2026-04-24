@@ -177,6 +177,13 @@
     cursor: default;
 }
 
+#enhancer-status-orb.state-quota-exhausted {
+    background-color: rgba(0, 0, 0, 0.8);
+    border: 2px solid #dc3545;
+    box-sizing: border-box;
+    cursor: default;
+}
+
 #movie_player.yt-enhancer-active .ytp-caption-window-container {
     display: none !important;
 }

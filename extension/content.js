@@ -366,6 +366,14 @@ class YouTubeSubtitleEnhancer {
         }
         if (request.action === 'forceRerun') {
             this._log('收到強制重跑指令，將清除暫存並重新執行主流程。');
+            this.state.abortController?.abort();
+            document.getElementById('enhancer-status-orb')?.remove();
+            document.getElementById('enhancer-subtitle-container')?.remove();
+            this.toggleNativeSubtitles(false);
+            this.state.statusOrb = null;
+            this.state.hasActivated = false;
+            this.state.isProcessing = false;
+            this.state.translatedTrack = null;
             if (this.currentVideoId) {
                 const cacheKey = `yt-enhancer-cache-${this.currentVideoId}`;
                 await this.setCache(cacheKey, null);
@@ -1178,8 +1186,14 @@ class YouTubeSubtitleEnhancer {
                 const retryDelay = (retryDelayMatch && retryDelayMatch[1]) ? parseInt(retryDelayMatch[1], 10) : 10;
                 const retryDelayMs = (retryDelay + 1) * 1000;
                 
-                this._log(`偵測到模型暫時性過載，${retryDelay} 秒後重試...`);
-                this.setOrbState('retrying'); // 顯示黃色狀態 (階段 3 會優化 UI)
+                const isQuotaExhausted = errorMsg.includes('reason: QUOTA_EXHAUSTED');
+                if (isQuotaExhausted) {
+                    this._log(`偵測到配額耗盡，${retryDelay} 秒後自動恢復...`);
+                    this.setOrbState('quota-exhausted');
+                } else {
+                    this._log(`偵測到模型暫時性過載，${retryDelay} 秒後重試...`);
+                    this.setOrbState('retrying');
+                }
                 
                 setTimeout(() => {
                     // 檢查狀態，如果使用者已導航離開，則不重試
@@ -1244,7 +1258,10 @@ class YouTubeSubtitleEnhancer {
                 if (response.retryDelay) {
                     structuredError += ` (retryDelay: ${response.retryDelay})`;
                 }
-                throw new Error(structuredError); // 拋出 "TEMPORARY_FAILURE (retryDelay: 22)"
+                if (response.reason) {
+                    structuredError += ` (reason: ${response.reason})`;
+                }
+                throw new Error(structuredError);
             }
 
             if (response?.data && Array.isArray(response.data)) {
@@ -1501,6 +1518,11 @@ class YouTubeSubtitleEnhancer {
                     orb.innerHTML = '<div>%</div>';
                     orb.title = '模型暫時過載，自動重試中...';
                 }
+                break;
+
+            case 'quota-exhausted':
+                orb.innerHTML = '<div>Q</div>';
+                orb.title = '今日 API 配額已全數耗盡，翻譯將於 1 小時後自動恢復。如需立即使用，請至設定頁新增 API Key。';
                 break;
             
             // 【關鍵修正點】: 新增 CC 狀態顯示邏輯

@@ -360,7 +360,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                 } 
 
                 if (allKeysDeadToday) {
-                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: 3600 }); 
+                    sendResponse({ error: 'TEMPORARY_FAILURE', retryDelay: 3600, reason: 'QUOTA_EXHAUSTED' });
                 } else if (lastError && lastError.type === 'BATCH_FAILURE') {
                     sendResponse({ error: 'BATCH_FAILURE', message: '模型無法處理此批次內容' });
                 } else {

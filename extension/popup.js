@@ -975,10 +975,10 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const forceRerunButton = document.getElementById('forceRerunButton');
         forceRerunButton.addEventListener('click', async () => {
+            forceRerunButton.disabled = true;
+            forceRerunButton.textContent = '指令已發送 ✓';
             const tab = await getActiveTab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'forceRerun' });
-            forceRerunButton.textContent = '指令已發送 ✓';
-            forceRerunButton.disabled = true;
             setTimeout(() => window.close(), 800);
         });
         
