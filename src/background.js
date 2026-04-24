@@ -41,26 +41,14 @@ const API_KEY_COOLDOWN_SECONDS = 60; // 金鑰因配額失敗後的冷卻時間�
 // **「新使用者」的「初始預設值」
 const DEFAULT_CUSTOM_PROMPTS = {
     "ja": `**風格指南:**
-- 翻譯需符合台灣人的說話習慣，並保留說話者(日本偶像)的情感語氣。
+- 翻譯需符合台灣人的說話習慣，並保留說話者的情感語氣。
 
 **人名/專有名詞對照表 (優先級最高):**
 無論上下文如何，只要看到左側的原文或讀音，就必須嚴格地翻譯為右側的詞彙。
-- まちだ / まち田 / まちだ けいた -> 町田啟太
-- さとう たける -> 佐藤健
-- しそん じゅん -> 志尊淳
-- しろたゆう -> 城田優
-- みやざき ゆう -> 宮崎優
-- 天ブランク -> TENBLANK
-- グラスハート -> 玻璃之心
-- Fujitani Naoki -> 藤谷直季
-- Takaoka Sho -> 高岡尚
-- Sakamoto Kazushi -> 坂本一志
-- 西條朱音 -> 西條朱音
-- 菅田將暉 -> 菅田將暉
-- ノブ -> ノブ
+(此處新增您的對照表，格式範例：原文 -> 譯名)
 `,
     "ko": `**風格指南:**
-- 翻譯需符合台灣人的說話習慣，並保留說話者(偶像)的情感語氣。
+- 翻譯需符合台灣人的說話習慣，並保留說話者的情感語氣。
 
 **人名/專有名詞對照表 (優先級最高):**
 無論上下文如何，只要看到左側的原文或讀音，就必須嚴格地翻譯為右側的詞彙。
@@ -70,6 +58,17 @@ const DEFAULT_CUSTOM_PROMPTS = {
 
 **人名/專有名詞對照表 (優先級最高):**
 無論上下文如何，只要看到左側的原文或讀音，就必須嚴格地翻譯為右側的詞彙。
+`,
+};
+
+// 供 options UI「載入範例」按鈕使用；個人化程度較高，不作為預設值
+const EXAMPLE_CUSTOM_PROMPTS = {
+    "ja": `**風格指南:**
+- 翻譯需符合台灣人的說話習慣，並保留說話者(日本偶像)的情感語氣。
+
+**人名/專有名詞對照表 (優先級最高):**
+- まちだ けいた -> 町田啟太
+- さとう たける -> 佐藤健
 `,
 };
 
@@ -243,13 +242,14 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                 if (overridePrompt) {
                     fullPrompt = overridePrompt.replace('{json_input_text}', jsonInputText);
                 } else {
-                    const sourceLangName = LANG_MAP[source_lang] || '原文';
-                    const corePrompt = DEFAULT_CORE_PROMPT_TEMPLATE.replace(/{source_lang}/g, sourceLangName);
                     const settingsResult = await chrome.storage.local.get(['ytEnhancerSettings']);
                     const settings = settingsResult.ytEnhancerSettings || {};
                     const tier2List = settings.auto_translate_priority_list || [];
                     const langConfig = tier2List.find(item => item.langCode === source_lang);
-                    const customPromptPart = langConfig ? langConfig.customPrompt : "";
+                    // 優先順序：tier2 name → LANG_MAP → source_lang code → '原文'
+                    const sourceLangName = langConfig?.name || LANG_MAP[source_lang] || source_lang || '原文';
+                    const corePrompt = DEFAULT_CORE_PROMPT_TEMPLATE.replace(/{source_lang}/g, sourceLangName);
+                    const customPromptPart = langConfig?.customPrompt || '';
                     fullPrompt = `${customPromptPart}\n\n${corePrompt.replace('{json_input_text}', jsonInputText)}`;
                 }
 
@@ -517,6 +517,18 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                     console.error('[Background] getDebugPrompts 失敗:', e);
                     sendResponse({ success: false, error: e.message });
                 }
+            })();
+            break;
+
+        case 'getExamplePrompt':
+            // 功能: 回傳指定語言的範例 Prompt（用於 options UI 的「載入範例」按鈕）
+            // input: langCode (string)
+            // output: { success: true, examplePrompt: string }
+            isAsync = true;
+            (async () => {
+                const { langCode } = request;
+                const example = EXAMPLE_CUSTOM_PROMPTS[langCode] || '';
+                sendResponse({ success: true, examplePrompt: example });
             })();
             break;
 

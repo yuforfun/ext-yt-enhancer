@@ -7,9 +7,13 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
     "build": "esbuild src/background.js --bundle --outfile=extension/background.js --minify",
     "watch": "esbuild src/background.js --bundle --outfile=extension/background.js --watch"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/src/__tests__/**/*.test.js"]
   },
   "repository": {
     "type": "git",
@@ -26,6 +30,7 @@
     "@google/genai": "^1.40.0"
   },
   "devDependencies": {
-    "esbuild": "^0.27.3"
+    "esbuild": "^0.27.3",
+    "jest": "^30.3.0"
   }
 }
