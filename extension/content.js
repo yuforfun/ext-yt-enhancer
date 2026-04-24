@@ -659,7 +659,9 @@ class YouTubeSubtitleEnhancer {
             return;
         } 
         
-        // (不建立狀態圓環 Orb)
+        // 原文模式不使用狀態圓環；若 watchdog 誤觸發留下 cc-failed orb，一併清除
+        document.getElementById('enhancer-status-orb')?.remove();
+        this.state.statusOrb = null;
         this.createSubtitleContainer(playerContainer);
         this.applySettingsToUI();
         this.toggleNativeSubtitles(true); // 隱藏原生字幕
