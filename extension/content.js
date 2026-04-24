@@ -631,15 +631,16 @@ class YouTubeSubtitleEnhancer {
         if (cachedData && cachedData.translatedTrack) {
             this._log('[Tier 3->2] 發現快取，直接載入。');
             this.state.translatedTrack = cachedData.translatedTrack;
-            // 從快取讀取 vssId 並傳遞
-            const vssIdFromCache = cachedData.vssId || ''; // 添加 fallback
-            this.activate(cachedData.rawPayload, vssIdFromCache); // 觸發完整翻譯
+            this.state.hasActivated = true;
+            this.activate(cachedData.rawPayload, cachedData.vssId || '');
+        } else if (this.state.rawPayload) {
+            // Tier 3 原文模式下 rawPayload 已存在，直接觸發翻譯，無需重新請求軌道
+            this._log('[Tier 3->2] 使用現有 rawPayload 直接觸發翻譯。');
+            this.state.hasActivated = true;
+            this.activate(this.state.rawPayload, this.state.currentVssId || '');
         } else {
-            this._log(`[Tier 3->2] 無快取，命令特工重新獲取軌道...`);
-            // 注意：此時軌道應已在原文模式下載入，
-            // 我們需要觸發 TIMEDTEXT_DATA 再次傳來，
-            // 但由於 isNativeView = false，這次它將觸發 activate()。
-            // 為保險起見，再次發送啟用命令。
+            // 極端 fallback（正常情況不會走到此處）
+            this._log('[Tier 3->2] rawPayload 不存在，重新請求軌道。');
             this.state.targetVssId = trackToEnable.vssId;
             this.state.activationWatchdog = setTimeout(() => this.handleActivationFailure(), 3000);
             window.postMessage({ from: 'YtEnhancerContent', type: 'FORCE_ENABLE_TRACK', payload: trackToEnable }, '*');
