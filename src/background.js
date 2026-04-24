@@ -513,18 +513,31 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             // input from: popup.js -> 主開關按鈕的點擊事件
             // output to: popup.js (回傳新的開關狀態) 和 所有 content.js (廣播 settingsChanged 事件)
             isAsync = true;
-            chrome.storage.local.get({ 'ytEnhancerSettings': defaultSettings }, (result) => {
-                const newSettings = result.ytEnhancerSettings;
-                newSettings.isEnabled = !newSettings.isEnabled;
-                chrome.storage.local.set({ 'ytEnhancerSettings': newSettings }, () => {
+            (async () => {
+                // 防止快速連點造成的重入
+                if (globalCircuitBreaker._toggleLock) {
+                    sendResponse({ isEnabled: null, error: 'busy' });
+                    return;
+                }
+                globalCircuitBreaker._toggleLock = true;
+                try {
+                    const result = await chrome.storage.local.get({ 'ytEnhancerSettings': defaultSettings });
+                    const newSettings = { ...result.ytEnhancerSettings };
+                    newSettings.isEnabled = !newSettings.isEnabled;
+                    await chrome.storage.local.set({ 'ytEnhancerSettings': newSettings });
                     sendResponse({ isEnabled: newSettings.isEnabled });
-                    chrome.tabs.query({ url: "*://www.youtube.com/*" }, (tabs) => {
-                        for (const tab of tabs) {
-                            chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged', settings: newSettings }).catch(() => {});
-                        }
-                    });
-                });
-            });
+
+                    const tabs = await chrome.tabs.query({ url: "*://www.youtube.com/*" });
+                    for (const tab of tabs) {
+                        chrome.tabs.sendMessage(tab.id, {
+                            action: 'settingsChanged',
+                            settings: newSettings
+                        }).catch(() => {});
+                    }
+                } finally {
+                    globalCircuitBreaker._toggleLock = false;
+                }
+            })();
             break;
         
         case 'getDebugPrompts':
