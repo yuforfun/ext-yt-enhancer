@@ -1,4 +1,4 @@
-# YouTube 翻譯增強工具 (Ext-YT-Enhancer) - 專案情境總結 (v4.2.0)
+# YouTube 翻譯增強工具 (Ext-YT-Enhancer) - 專案情境總結 (v4.2.2)
 
 ## 1. 專案目標與核心功能
 
@@ -9,19 +9,25 @@
 **核心功能：**
 
 * **智慧型後端代理 (Smart Backend Agent)**：
-    * **斷路器機制 (Circuit Breaker)**：在記憶體中維護「金鑰-模型」的健康狀態。精準區分 **RPM** (速率限制，冷卻 60s) 與 **RPD** (每日額度耗盡，冷卻 24h)，在發送請求前先查表 (Local Skip)，避免無效請求。
-    * **負載平衡 (Model-First Strategy)**：採用「模型優先」的雙重迴圈邏輯。優先使用高品質模型（如 Gemini 3.0 Pro）遍歷所有可用金鑰，失敗後才降級至次一級模型（如 Flash），確保翻譯品質最大化。
-    * **金鑰黏著性 (Key Stickiness)**：系統會記憶並優先使用上一次成功請求的金鑰，減少輪詢開銷。
+    * **斷路器機制 (Circuit Breaker)**：在記憶體中維護「金鑰-模型」的健康狀態。精準區分 **RPM** (速率限制，冷卻 60s) 與 **RPD** (每日額度耗盡，冷卻 24h)，在發送請求前先查表 (Local Skip)，避免無效請求。引入 `_readyPromise` + `ensureLoaded()`，消除 Service Worker 重啟後的 50–200ms 競態窗口；`_toggleLock` 旗標防止 popup 快速連點導致的 `toggleGlobalState` 競態條件。
+    * **負載平衡 (Model-First Strategy)**：採用「模型優先」的雙重迴圈邏輯。優先使用高品質模型（如 Gemini 3.0 Pro）遍歷所有可用金鑰，失敗後才降級至次一級模型（如 Flash），確保翻譯品質最大化。迴圈結束後補掃所有 key/model 狀態，若本輪 trip 後已無可用組合，立即回傳 `reason: QUOTA_EXHAUSTED`，省去無意義的重試等待。
+    * **金鑰黏著性 (Key Stickiness)**：`_lastSuccessfulKeyIdCache` 記憶體快取取代每次 session storage 讀取，`reorderKeysByStickiness` 改為同步函式；`recordSuccessfulKey` 同步更新快取並非同步持久化。`_clientCache` Map 快取 `GoogleGenAI` client 實例，避免每批次重複建構，`updateSettings` 含 `userApiKeys` 時自動失效。
 * **播放器優先握手 (Player-First Handshake)**：
     * 解決 `content.js` 與 `injector.js` 之間的時序競爭 (Race Condition)。由 `injector.js` 確保獲取到 YouTube 播放器資料後，才回應 `content.js` 的主動輪詢。
 * **三層式語言決策引擎 (3-Tier Engine)**：
     1.  **Tier 1 (原文顯示)**：優先匹配使用者設定的「母語」，不消耗 API 額度。
-    2.  **Tier 2 (自動翻譯)**：匹配使用者設定的「目標語言」，根據自訂 Prompt 進行 AI 翻譯。
-    3.  **Tier 3 (按需翻譯)**：Fallback 模式，顯示原文並在播放器右上角提供「翻譯」按鈕，點擊後才觸發翻譯。
+    2.  **Tier 2 (自動翻譯)**：匹配使用者設定的「目標語言」，根據自訂 Prompt 進行 AI 翻譯。支援快取命中路徑（需驗證 `sourceLang` 一致性）。
+    3.  **Tier 3 (按需翻譯)**：Fallback 模式，顯示原文並在播放器右上角提供「翻譯」按鈕。點擊後優先使用 `activateNativeView` 預存的 `rawPayload` 直接觸發翻譯，無需重新請求 injector。
+    * **統一決策入口 `_runTierDecision`**：`start()` 與 `TIMEDTEXT_DATA` handler 共同呼叫的非同步函式，消除約 180 行重複的 Tier 判斷邏輯，確保「鏡像原則」在架構層面強制落地。
 * **高品質分句引擎 (HQS Engine)**：
     * 專門針對日文 ASR (自動辨識字幕) 破碎問題設計。
     * **觸發機制**：僅當 `hqsEnabledForJa` 開啟 + 語言為日文 + ASR 多 Seg 事件比例超過 `0.35` 時觸發。
     * **處理流程**：執行三階段管線（清理雜訊 -> 語意/時間斷句 -> 碎片合併）。
+
+* **快取子系統 (Cache Subsystem)**：
+    * **TTL 365 天**：`CACHE_TTL_MS` 常數定義 365 天有效期，`getCache` 讀取時比對 `cachedAt` 欄位自動清除過期快取。
+    * **語言鎖定 (sourceLang Lock)**：`setCache` 存入時附加 `sourceLang` 欄位；`getCache` 讀取時嚴格比對（向下相容：舊版無 `sourceLang` 欄位時允許載入），防止跨語言快取污染。
+    * **自動清理 `purgeExpiredCache`**：`background.js` 提供清理過期快取項目的工具函式。
 
 ## 2. 系統架構與資訊流
 
@@ -42,30 +48,32 @@
         5.  `content.js` 收到資料，呼叫 `start()` 進入決策引擎。
 
     * **[流程二：HQS 翻譯流程 (Tier 2)]**
-        1.  `content.js` (`start()`) 命中 Tier 2，鎖定目標軌道的 `vssId` (`state.targetVssId`)，命令 `injector.js` (`FORCE_ENABLE_TRACK`)。
+        1.  `content.js` (`start()`) 呼叫 `_runTierDecision()`，命中 Tier 2，先查詢 `getCache()`（驗證 `sourceLang` 一致性），若快取命中則直接呼叫 `activate()`；快取未命中則鎖定目標軌道 `vssId`，命令 `injector.js` (`FORCE_ENABLE_TRACK`)。
         2.  `injector.js` 攔截 `/api/timedtext` 回應，`postMessage('TIMEDTEXT_DATA', ...)`。
-        3.  `content.js` 收到 `TIMEDTEXT_DATA`，驗證 `vssId` 或 `lang` 匹配 `targetVssId`，解除看門狗，呼叫 `activate()`。
+        3.  `content.js` 收到 `TIMEDTEXT_DATA`，驗證 `vssId` 或 `lang` 匹配 `targetVssId`，解除看門狗，呼叫 `_runTierDecision()` (step 3) -> `activate()`。
         4.  `activate()` 呼叫 `parseAndTranslate()` -> `parseRawSubtitles()`。
         5.  `parseRawSubtitles()` 檢查 `isJapanese` && `settings.hqsEnabledForJa`。
         6.  (若為 True) 計算「多 Seg 比例」，若 > `THRESHOLD` (0.35)，執行 HQS 管線 (`_phase1`...`_phase3`)；否則執行 `_fallbackParseRawSubtitles()`。
         7.  (若為 False) 執行 `_fallbackParseRawSubtitles()`。
         8.  `content.js` 呼叫 `processNextBatch()`，以 `BATCH_SIZE = 25` 批次呼叫 `chrome.runtime.sendMessage({ action: 'translateBatch', ... })`。
-        9.  `background.js` 收到任務，組合 Prompt，執行「金鑰-模型」迴圈呼叫 Gemini。
-        10. (成功) `sendResponse({ data: [...] })`。
-        11. (失敗) `sendResponse({ error: 'TEMPORARY_FAILURE' | 'PERMANENT_FAILURE' | 'BATCH_FAILURE', ... })`。
-        12. `content.js` 處理回應，渲染 UI 或顯示錯誤狀態 (黃色圓環、紅色圓環、點擊重試行)。
+        9.  `background.js` 收到任務，先呼叫 `circuitBreaker.ensureLoaded()` 確保狀態已從 storage 載入，組合 Prompt，執行「金鑰-模型」迴圈呼叫 Gemini。
+        10. (成功) `sendResponse({ data: [...] })`，記錄成功金鑰至 `_lastSuccessfulKeyIdCache`。
+        11. (失敗) `sendResponse({ error: 'TEMPORARY_FAILURE' | 'PERMANENT_FAILURE' | 'BATCH_FAILURE', reason?: 'QUOTA_EXHAUSTED', ... })`。
+        12. `content.js` 處理回應，渲染 UI 或顯示錯誤狀態（黃色圓環 `retrying`、紅框 `quota-exhausted Q`、紅色圓環、點擊重試行）。
 
     * **[流程三：批次翻譯與負載平衡]**
-        1.  `content.js` 累積 **45 句** 字幕，呼叫 `translateBatch`。
-        2.  `background.js` 收到請求，初始化 `CircuitBreaker`。
-        3.  **外層迴圈 (Model)**：依序嘗試 `Gemini 3.0 Pro` -> `Gemini 2.5 Pro` -> `Gemini 2.5 Flash`...
-        4.  **內層迴圈 (Key)**：
+        1.  `content.js` 累積 **25 句** 字幕，呼叫 `translateBatch`。
+        2.  `background.js` 收到請求，呼叫 `globalCircuitBreaker.ensureLoaded()` 確保斷路器狀態從 session storage 同步完畢（消除 Service Worker 重啟後的競態窗口）。
+        3.  從 `_clientCache` 取得（或建立）`GoogleGenAI` client 實例；以 `_lastSuccessfulKeyIdCache` 重排 Keys 優先序。
+        4.  **外層迴圈 (Model)**：依序嘗試 `Gemini 3.0 Pro` -> `Gemini 2.5 Pro` -> `Gemini 2.5 Flash`...
+        5.  **內層迴圈 (Key)**：
             * 檢查 `CircuitBreaker.isOpen(Key, Model)`。若冷卻中則跳過 (Local Skip)。
             * 若可用，發送 API 請求。
-        5.  **結果處理**：
-            * **成功**：回傳翻譯結果，更新「黏著金鑰」。
+        6.  **結果處理**：
+            * **成功**：回傳翻譯結果，同步更新 `_lastSuccessfulKeyIdCache` 並非同步持久化。
             * **失敗**：解析錯誤代碼。若為 RPD (Day Limit) 判罰 24 小時；若為 RPM (Rate Limit) 判罰 60 秒。寫入斷路器並嘗試下一個 Key。
-        6.  `content.js` 收到結果渲染 UI，或收到 `retryDelay` 顯示黃色重試圓環。
+        7.  迴圈結束後補掃所有 key/model 狀態。若已無可用組合，立即回傳 `{ error: 'TEMPORARY_FAILURE', retryDelay: 3600, reason: 'QUOTA_EXHAUSTED' }`。
+        8.  `content.js` 收到結果渲染 UI，或收到含 `reason: QUOTA_EXHAUSTED` 時顯示紅框 Q 圓環；一般暫時性過載顯示黃色重試圓環。
 
     * **[流程四：Prompt 實驗室]**
         1.  `lab.html` 載入，`lab.js` 觸發 `getDebugPrompts` 填入預設值。
@@ -124,6 +132,19 @@
     * **原因**：減少無效的 HTTP 請求，提升 UI 反應速度並避免網路資源浪費。
     * **實作**：`background.js` 在 `fetch` 前先檢查 `CircuitBreaker.isOpen()`，若斷路器開啟則直接跳過該 Key/Model 組合。
 
+### 後端效能與穩健性
+* **[決策] CircuitBreaker `_readyPromise` 模式**：
+    * **原因**：MV3 Service Worker 可隨時被 Chrome 暫停並重啟，重啟後斷路器狀態需從 `chrome.storage.session` 非同步載入，若在載入完成前就接收到 `translateBatch` 請求，會導致所有 key/model 誤判為可用並發出無效請求。
+    * **實作**：建構子中啟動 `_readyPromise = _loadFromStorage()`；`translateBatch` 在進入迴圈前先 `await ensureLoaded()`，確保狀態同步完畢。
+
+* **[決策] `_clientCache` 避免重複建構 SDK Client**：
+    * **原因**：`GoogleGenAI` 物件建構需解析 API Key、初始化 HTTP 連線池，每批次重複建構浪費資源。
+    * **實作**：以 Map 以 key ID 為索引快取 client 實例；`updateSettings` 含 `userApiKeys` 更新時清除整個 Map 強制重建。
+
+* **[決策] `toggleGlobalState` 改 async/await + `_toggleLock`**：
+    * **原因**：原 callback 風格在 popup 快速連點時可能同時發起兩個 toggle，導致競態條件（兩次讀取到相同舊值，結果相互抵消）。
+    * **實作**：加入 `globalCircuitBreaker._toggleLock` 布林旗標；若已鎖定則立即回傳 `{ isEnabled: null, error: 'busy' }`；`finally` 區塊確保例外時鎖定仍釋放。
+
 ### 前端邏輯與 HQS 引擎
 * **[決策] HQS 的 ASR 比例觸發**：
     * **原因**：HQS (高品質分句) 重組演算法若套用在人工翻譯的字幕上，會破壞原本良好的斷句結構。
@@ -134,7 +155,24 @@
 * **[決策] `injector.js` 的 vssId `''` Fallback**：
     * **原因**：`URL.searchParams.get('vssId')` 在 `vssId` 不存在時 (例如手動上傳的字幕) 會回傳 `null`，這會導致 `content.js` 的 `vssId === targetVssId` 驗證邏輯崩潰。
     * **實作**：`injector.js` 在獲取 `vssId` 時強制使用 `|| ''`，確保 `vssId` 永不為 `null`。
-    * 
+
+* **[決策] `_runTierDecision` 統一決策入口**：
+    * **原因**：`start()` (自動載入) 和 `TIMEDTEXT_DATA` handler (手動 CC 切換) 原本各自維護一套 Tier 1/2/3 判斷邏輯，約 180 行重複程式碼，任何修改都需雙份同步，易出現分歧。
+    * **實作**：抽取 `async _runTierDecision(lang, timedTextPayload, vssId, availableTracks)` 作為唯一入口，`start()` 與 `TIMEDTEXT_DATA` handler 均委派至此函式，在架構層面強制「鏡像原則」。
+
+* **[決策] Tier 3 點擊翻譯改用 rawPayload 直觸**：
+    * **原因**：原流程點擊「翻譯」後重送 `FORCE_ENABLE_TRACK`，但該軌道 YouTube 已播放過，不會重新回傳資料，導致 watchdog 超時顯示 `cc-failed`。
+    * **實作**：`activateNativeView` 執行時將 `rawPayload` 存入 `state.rawPayload`；點擊翻譯後優先使用此 payload 直接呼叫 `activate()`，同時設定 `hasActivated = true` 防止週期性 `TIMEDTEXT_DATA` 重複觸發 Tier 3 按鈕。
+
+* **[決策] 快取 sourceLang 鎖定 + 向下相容**：
+    * **原因**：使用者切換語言後若快取無語言標記，會載入錯誤語言的快取。
+    * **實作**：新快取存入時附加 `sourceLang` 欄位；讀取時執行 `(!cachedData.sourceLang || cachedData.sourceLang === lang)` 比對——舊版無欄位快取允許載入（向下相容），新快取則嚴格比對，防止跨語言污染。
+
+* **[決策] 配額耗盡 (QUOTA_EXHAUSTED) 獨立 Orb 狀態**：
+    * **原因**：原本配額耗盡與暫時性過載都顯示同樣的黃色圓環，使用者無法區分「等一會兒就好」vs「今天額度用完了」。
+    * **實作**：`background.js` 回傳 `reason: QUOTA_EXHAUSTED`；`content.js` 解析後顯示紅框 `Q` 圓環，tooltip 說明配額耗盡原因與解決方案。
+
+
 * **[開發流] 引入編譯步驟 (esbuild)**
 * **決策**：從直接撰寫瀏覽器腳本，轉變為 `src/` (原始碼) + `npm run build` (打包) 的流程。
 * **原因**：為了使用官方 `Google GenAI SDK` (它依賴 Node.js 生態系)，Chrome MV3 環境無法直接 `import` npm 套件，必須透過打包工具將依賴項壓製成單一檔案。
@@ -158,9 +196,12 @@
 * **[包袱] 資料庫遷移 (Migration)**：
     * **描述**：`popup.js` 的 `loadSettings` 中包含將舊版 `preferred_langs` 轉換為新版 `auto_translate_priority_list` 的邏輯。
     * **原因**：為了兼容從 v1.x 升級至 v2.0+ 的舊使用者，此邏輯**不可刪除**。
-* **[包袱] `DEFAULT_CUSTOM_PROMPTS` 同步債**：
-    * **描述**：`DEFAULT_CUSTOM_PROMPTS` 常數同時存在於 `background.js` (用於預設邏輯) 和 `popup.js` (用於 UI 顯示)。
-    * **影響**：修改預設 Prompt 時，兩者必須保持同步。
+* **[包袱] `DEFAULT_CUSTOM_PROMPTS` vs `EXAMPLE_CUSTOM_PROMPTS` 雙常數**：
+    * **描述**：`DEFAULT_CUSTOM_PROMPTS` 已改為通用格式說明範本（無硬編碼藝人名稱）；另設 `EXAMPLE_CUSTOM_PROMPTS` 常數保留個人化範例，供 options UI「載入範例」功能使用（對應新增的 `getExamplePrompt` message handler）。
+    * **影響**：修改預設 Prompt 格式時仍需同步確認 `background.js` 與 `popup.js` 的展示是否一致。
+* **[包袱] LANG_MAP 動態查找優先序**：
+    * **描述**：`translateBatch` 的 Prompt 組裝現在優先從 `tier2` 設定物件的 `name` 欄位取得語言名稱，`LANG_MAP` 僅作最後備援，確保新增第四語言後 Prompt 品質不下降。
+    * **影響**：新增語言時需確保 `tier2` 設定物件的 `name` 欄位有正確填入。
 
 ## 6. 嚴格護欄 (Guard Rails) (最重要)
 
@@ -180,8 +221,10 @@
 * **[禁止]**：**嚴格禁止**移除 `content.js` 的 `parseRawSubtitles` 函式中的 `_fallbackParseRawSubtitles` 邏輯。這確保了在非日文、HQS 關閉或人工字幕情境下，系統仍能運作。
 * **[禁止]**：**嚴格禁止**在 `content.js` (Isolated World) 中直接存取 `window.player` 或 `window.fetch`。所有與頁面 `window` 的互動**必須**透過 `postMessage` 委派給 `injector.js` (Main World)。
 * **[禁止]**：**嚴格禁止**使用 `===` 或 `.includes()` 進行語言代碼比對。所有語言比對**必須**使用 `checkLangEquivalency` 函式，以解決 `zh-TW` vs `zh-Hant` 等匹配問題。
-* **[禁止]**：**嚴格禁止**破壞 `content.js` 的鏡像原則。`start()` (自動載入) 和 `onMessageFromInjector` (手動切換) 內部的 Tier 1/2/3 判斷邏輯**必須**保持 100% 同步。
+* **[禁止]**：**嚴格禁止**破壞 `content.js` 的鏡像原則。`start()` 和 `TIMEDTEXT_DATA` handler 內部的 Tier 1/2/3 判斷邏輯**必須**透過 `_runTierDecision` 統一入口執行，不得各自維護獨立的判斷分支。
 * **[禁止]**：**嚴格禁止**在 `content.js` 呼叫 `translateBatch` 時傳遞 `overridePrompt` 參數。此參數僅供 `lab.js` 測試使用，若在正式環境傳遞將破壞使用者的自訂 Prompt 設定。
+* **[禁止]**：**嚴格禁止**在 Tier 3 點擊翻譯流程中移除 `rawPayload` 的直接觸發路徑。點擊翻譯後**必須**優先使用 `state.rawPayload` 呼叫 `activate()`，並立即設定 `hasActivated = true`，否則會導致 watchdog 超時顯示 `cc-failed`，以及週期性 `TIMEDTEXT_DATA` 重複觸發翻譯按鈕。
+* **[禁止]**：**嚴格禁止**在快取讀取邏輯中移除 `sourceLang` 的向下相容判斷 (`!cachedData.sourceLang`)。必須保持 `(!cachedData.sourceLang || cachedData.sourceLang === lang)` 的完整形式，否則升級前已完成翻譯的舊版快取將全數失效。
 
 ### [UI 與其他] Popup & Options
 * **[禁止]**：**嚴格禁止**在 `popup.js` 中直接存取只存在於 `options.html` 的 DOM 元素 (例如 `apiKeyList`)。存取前**必須**使用 `if (isOptionsPage)` 或 `if (element)` 進行嚴格檢查，否則會導致 `popup.html` (小彈窗) 崩潰。

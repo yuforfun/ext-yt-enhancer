@@ -41,5 +41,7 @@ dist/
 
 # 忽略個人檔案
 .local/
-
+__tests__/
 node_modules/
+.claude/
+CLAUDE.md
