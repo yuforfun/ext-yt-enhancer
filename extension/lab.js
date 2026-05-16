@@ -134,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const fullPrompt_B = `${customBEl.value}\n\n${universalBEl.value}`;
         
         // 【關鍵修正點】: 動態讀取設定檔，抓取模型偏好的第 0 個作為測試標的
-        let targetModel = "gemini-3.1-flash-lite-preview"; // 預設值防呆
+        let targetModel = "gemini-3.1-flash-lite"; // 預設值防呆
         try {
             const result = await chrome.storage.local.get(['ytEnhancerSettings']);
             if (result.ytEnhancerSettings && result.ytEnhancerSettings.models_preference && result.ytEnhancerSettings.models_preference.length > 0) {
@@ -214,12 +214,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // 模塊 B: Model 競技場 (Model Test)
     // ========================================================================
     async function runModelTest() {
-        // 功能: 逐一測試指定模型的連線狀態與耗時
-        // input: 無
-        // output: 渲染模型診斷表格
-        // 其他補充: 加長輸出預覽的字數限制
+        // 功能:逐一測試指定模型的連線狀態與耗時，並顯示完整的輸出或詳細的錯誤原因。
+        // input: 無 (從 DOM 讀取輸入與 Prompt)
+        // output: 渲染模型診斷表格到 modelOutputArea
+        // 其他補充: 修復了多行輸入時只顯示第一句翻譯結果的漏洞。
+        
         const MODELS_TO_TEST = [
-            "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", 
+            "gemini-3.1-flash-lite", "gemini-3.1-   ", "gemini-3.1-pro-preview", 
             "gemini-3-pro-preview", "gemini-3-flash-preview", 
             "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"
         ];
@@ -251,14 +252,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (response.error) {
                     resultsData[i].status = '<span style="color: red;">❌ 失敗</span>';
-                    resultsData[i].detail = response.message || response.error;
+                    // 完整串接 error, reason 與 message
+                    let errorDetails = `[${response.error}]`;
+                    if (response.reason) errorDetails += ` Reason: ${response.reason}`;
+                    if (response.message) errorDetails += ` - ${response.message}`;
+                    resultsData[i].detail = escapeHTML(errorDetails);
                 } else if (response.data && response.data.length > 0) {
                     resultsData[i].status = '<span style="color: green;">✅ 成功</span>';
-                    // 【關鍵修正點】: 將 substring 長度從 40 放寬至 150，保留更多可視內容
-                    resultsData[i].detail = escapeHTML(response.data[0]).substring(0, 150) + '...'; 
+                    // 【關鍵修正點】: 將陣列合併為單一字串，確保多行輸入時所有句子都能顯示
+                    const fullText = response.data.join('\n') || '';
+                    resultsData[i].detail = escapeHTML(fullText.length > 300 ? fullText.substring(0, 300) + '... (已截斷)' : fullText); 
                 } else {
                     resultsData[i].status = '<span style="color: orange;">⚠️ 異常</span>';
-                    resultsData[i].detail = '格式錯誤';
+                    resultsData[i].detail = '格式錯誤：未收到預期的資料陣列';
                 }
             } catch (e) {
                 resultsData[i].time = ((Date.now() - startTime) / 1000).toFixed(2) + 's';
