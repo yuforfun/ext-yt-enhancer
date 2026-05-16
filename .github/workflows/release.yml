@@ -18,8 +18,8 @@ jobs:
 
       - name: Create Zip File
         run: |
-          # 修正版：在 lab.js 和 lab.html 前加上 * 以確保路徑匹配
-          zip -r YouTube_Subtitle_Extension_${{ github.ref_name }}.zip . -x "*.git*" ".github/*" ".vscode/*" "docs/*" "node_modules/*" "*.DS_Store" "package-lock.json" "package.json" "*.test.js" "*lab.js" "*lab.html" "README.md"
+          cd extension
+          zip -r ../YouTube_Subtitle_Extension_${{ github.ref_name }}.zip . -x "*.DS_Store"
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
