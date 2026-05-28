@@ -40,14 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     const ALL_MODELS = {
-        // 【關鍵修正點】: 新增 3.1 系列，保留指定模型，移除 2.0 系列
-        'gemini-3.1-flash-lite': { name: '3.1 Flash-Lite', tip: '推薦首選：新一代輕量模型，每日 500 RPD。' },
-        'gemini-3.1-pro-preview': { name: '3.1 Pro', tip: '（需付費）最新模型，適合複雜推理。' },
-        'gemini-3-pro-preview': { name: '3.0 Pro', tip: '（需付費）穩定強大模型，適合複雜推理。' },
-        'gemini-3-flash-preview': { name: '3.0 Flash', tip: '免費API，每日 20 RPD' },
-        'gemini-2.5-pro': { name: '2.5 Pro', tip: '（需付費）穩定高品質主力，適合長句翻譯。' },
-        'gemini-2.5-flash': { name: '2.5 Flash', tip: '上一代模型，免費API，每日 20 RPD' },
-        'gemini-2.5-flash-lite': { name: '2.5 Flash-Lite', tip: '上一代模型，免費API，每日 20 RPD' }
+        // 新增 3.5 系列
+        'gemini-2.5-flash': { name: '2.5 Flash', tip: '免費，每日 20 RPD' },
+        'gemini-3.1-flash-lite': { name: '3.1 Flash-Lite', tip: '免費，每日 500 RPD，輕量模型' },
+        'gemini-2.5-flash-lite': { name: '2.5 Flash-Lite', tip: '免費，每日 20 RPD，輕量模型' },
+        'gemini-3-flash-preview': { name: '3.0 Flash', tip: '免費，每日 20 RPD' },
+        'gemini-2.5-pro': { name: '2.5 Pro', tip: '需付費，高價位，穩定高品質主力，適合長句翻譯' },
+        'gemini-3.5-flash': { name: '3.5 Flash', tip: '需付費，中價位' },
+        'gemini-3.1-pro-preview': { name: '3.1 Pro', tip: '需付費，高價位，適合複雜推理' }
     };
 
     const NEW_LANGUAGE_PROMPT_TEMPLATE = `**風格指南:**

@@ -220,9 +220,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // 其他補充: 修復了多行輸入時只顯示第一句翻譯結果的漏洞。
         
         const MODELS_TO_TEST = [
-            "gemini-3.1-flash-lite", "gemini-3.1-   ", "gemini-3.1-pro-preview", 
-            "gemini-3-pro-preview", "gemini-3-flash-preview", 
-            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"
+            "gemini-2.5-flash", //Gemini 2.5 Flash
+            "gemini-3.1-flash-lite", //Gemini 3.1 Flash Lite
+            "gemini-2.5-flash-lite", //Gemini 2.5 Flash Lite
+            "gemini-3-flash-preview", //Gemini 3 Flash
+            "以下需付費(5/28紀錄)", 
+            "gemini-2.5-pro", //Gemini 2.5 Pro
+            "gemini-3.5-flash", //Gemini 3.5 Flash
+            "gemini-3.1-pro-preview" //Gemini 3.1 Pro
         ];
         
         runModelBtn.disabled = true;
