@@ -4,6 +4,35 @@
     <title>YT 字幕增強器 - 設定</title>
     <link rel="stylesheet" href="popup.css">
     <meta charset="UTF-8">
+    <style>
+        /* 快取清單專屬樣式 */
+        .cache-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; font-size: 13px; }
+        .cache-toolbar input, .cache-toolbar select { padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; }
+        .cache-toolbar input[type="search"] { flex: 1; min-width: 180px; }
+        .cache-toolbar input[type="number"] { width: 70px; }
+        .cache-summary { font-size: 12px; color: #666; margin-bottom: 8px; }
+        .cache-batch-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; padding: 6px 8px; background: #f4f4f5; border-radius: 4px; }
+        .cache-batch-bar button { padding: 4px 10px; font-size: 12px; }
+        .cache-item { display: flex; align-items: center; gap: 10px; padding: 8px; border-bottom: 1px solid #eee; }
+        .cache-item:last-child { border-bottom: none; }
+        .cache-item input[type="checkbox"] { flex-shrink: 0; }
+        .cache-thumb { width: 80px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; flex-shrink: 0; background: #eee; }
+        .cache-info { flex: 1; min-width: 0; font-size: 13px; }
+        .cache-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cache-fallback-title { font-weight: 600; color: #888; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cache-meta { color: #888; font-size: 12px; margin-top: 2px; }
+        .cache-delete-btn { flex-shrink: 0; padding: 4px 10px; font-size: 12px; background: #fee; color: #c00; border: 1px solid #fcc; border-radius: 4px; cursor: pointer; }
+        .cache-delete-btn:hover { background: #fcc; }
+        .cache-pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; }
+        .cache-pagination button { padding: 4px 10px; }
+        .cache-pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .cache-empty { text-align: center; color: #888; padding: 30px; font-size: 13px; }
+
+        /* 縮圖 modal */
+        #cache-thumb-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center; cursor: pointer; }
+        #cache-thumb-modal.show { display: flex; }
+        #cache-thumb-modal img { max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.5); }
+    </style>
 </head>
 <body style="width: auto; max-width: 600px; margin: 0 auto; padding: 20px;">
     
@@ -187,17 +216,52 @@
     <div id="tab-diag" class="tab-content">
         
         <div class="card">
-            <h2 class="card-title">資料管理</h2>
-            <button id="clearCacheButton" class="button-secondary" style="width: 100%;">清除所有影片的翻譯暫存</button>
-        </div>
-        
-        <div class="card">
             <h2 class="card-title">狀態日誌 (僅顯示當前分頁的持續性錯誤)</h2>
             <div id="error-log-container">
                 <p class="log-placeholder">目前沒有持續性錯誤紀錄。</p>
             </div>
         </div>
+
+        <div id="cache-list-card" class="card">
+            <h2 class="card-title">已快取影片清單</h2>
+            <p class="card-hint">點縮圖可放大檢視。刪除操作不可回復。</p>
+            <div class="cache-summary" id="cache-summary">載入中...</div>
+            <div class="cache-toolbar">
+                <input type="search" id="cache-search" placeholder="🔍 搜尋標題 / 頻道 / videoId..." />
+                <select id="cache-sort">
+                    <option value="newest">新 → 舊</option>
+                    <option value="oldest">舊 → 新</option>
+                    <option value="largest">大 → 小</option>
+                    <option value="smallest">小 → 大</option>
+                    <option value="title">標題 A → Z</option>
+                </select>
+                <label>僅顯示</label>
+                <input type="number" id="cache-days-filter" min="0" placeholder="天" />
+                <label>天前的</label>
+                <button id="cache-refresh" class="button-secondary" style="padding: 4px 10px; font-size: 12px;">🔄 重新載入</button>
+                <button id="cache-backfill" class="button-secondary" style="padding: 4px 10px; font-size: 12px;" title="從 translatedTrack 補齊舊快取的前兩句原文 (無法補 title/channel)">🔧 補齊舊快取</button>
+            </div>
+            <div class="cache-batch-bar">
+                <input type="checkbox" id="cache-select-all" />
+                <label for="cache-select-all">全選當頁</label>
+                <span style="flex: 1;"></span>
+                <button id="cache-delete-selected" class="cache-delete-btn" disabled>刪除選取 (0)</button>
+            </div>
+            <div id="cache-list"></div>
+            <div class="cache-pagination">
+                <button id="cache-prev" class="button-secondary">← 上一頁</button>
+                <span id="cache-page-info">第 1 / 1 頁</span>
+                <button id="cache-next" class="button-secondary">下一頁 →</button>
+                <select id="cache-page-size">
+                    <option value="20">每頁 20</option>
+                    <option value="50">每頁 50</option>
+                    <option value="100">每頁 100</option>
+                </select>
+            </div>
+        </div>
     </div>
+
+    <div id="cache-thumb-modal"><img id="cache-thumb-modal-img" alt="縮圖放大" /></div>
 
     <script src="config/models.js"></script>
     <script src="popup.js"></script>

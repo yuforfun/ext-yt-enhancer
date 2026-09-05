@@ -469,10 +469,24 @@ class YouTubeSubtitleEnhancer {
     }
 
     async setCache(key, data) {
-        // 功能: 將資料透過 background.js 存入指定 key 的暫存，並附加時間戳。
+        // 功能: 將資料透過 background.js 存入指定 key 的暫存，附加時間戳與 metadata (供快取清單 UI 使用)。
+        // Metadata: videoTitle / channelName / firstTwoOriginals (舊 title 沒抓到時當 fallback 顯示)
         try {
-            const dataWithTimestamp = data ? { ...data, cachedAt: Date.now() } : null;
-            await this.sendMessageToBackground({ action: 'setCache', key, data: dataWithTimestamp });
+            let dataWithMeta = null;
+            if (data) {
+                dataWithMeta = { ...data, cachedAt: Date.now() };
+                const details = this.state?.playerResponse?.videoDetails;
+                if (details) {
+                    dataWithMeta.videoTitle = details.title || '';
+                    dataWithMeta.channelName = details.author || '';
+                }
+                // 前兩句原文，供沒 title 的舊快取或抓不到 videoDetails 時當識別 fallback
+                const track = data.translatedTrack || [];
+                dataWithMeta.firstTwoOriginals = track.slice(0, 2)
+                    .map(t => (t?.originalText || '').slice(0, 40))
+                    .filter(Boolean);
+            }
+            await this.sendMessageToBackground({ action: 'setCache', key, data: dataWithMeta });
         } catch (e) {
             this._log('❌ 寫入暫存失敗:', e);
         }

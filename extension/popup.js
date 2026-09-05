@@ -516,11 +516,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setupApiKeyListeners();
 
         // --- 診斷與日誌 ---
-        document.getElementById('clearCacheButton')?.addEventListener('click', async () => {
-            const res = await sendMessage({ action: 'clearAllCache' });
-            showOptionsToast(`成功清除了 ${res.count} 個影片的暫存！`);
-        });
-        
         document.getElementById('diagnoseKeysButton')?.addEventListener('click', async (e) => {
             e.target.disabled = true;
             e.target.textContent = '診斷中...';
@@ -582,6 +577,256 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         loadErrorLogs();
+
+        // --- 已快取影片清單 UI ---
+        initCacheListUI();
+
+        // 快取清單 UI 狀態 (module-level in this scope)
+        let cacheState = {
+            all: [],           // 全部從 background 撈回的 metadata
+            filtered: [],      // 套用搜尋 + 天數濾鏡後
+            selectedKeys: new Set(),
+            page: 1,
+            pageSize: 20,
+            totalBytes: 0
+        };
+
+        function initCacheListUI() {
+            // 功能: 綁定快取清單所有互動 (搜尋/排序/分頁/勾選/刪除/縮圖 modal)
+            document.getElementById('cache-refresh')?.addEventListener('click', loadCacheList);
+            document.getElementById('cache-backfill')?.addEventListener('click', async (e) => {
+                const btn = e.target;
+                btn.disabled = true;
+                const originalText = btn.textContent;
+                btn.textContent = '補齊中...';
+                try {
+                    const res = await sendMessage({ action: 'backfillCacheMetadata' });
+                    if (res?.success) {
+                        showOptionsToast(`已補齊 ${res.backfilledCount} / ${res.totalCount} 筆舊快取`, 3000);
+                        loadCacheList();
+                    } else {
+                        showOptionsToast(`補齊失敗: ${res?.error || '未知錯誤'}`, 4000);
+                    }
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            });
+            document.getElementById('cache-search')?.addEventListener('input', () => { cacheState.page = 1; applyCacheFilters(); });
+            document.getElementById('cache-sort')?.addEventListener('change', () => { cacheState.page = 1; applyCacheFilters(); });
+            document.getElementById('cache-days-filter')?.addEventListener('input', () => { cacheState.page = 1; applyCacheFilters(); });
+            document.getElementById('cache-page-size')?.addEventListener('change', (e) => { cacheState.pageSize = parseInt(e.target.value, 10); cacheState.page = 1; renderCachePage(); });
+            document.getElementById('cache-prev')?.addEventListener('click', () => { if (cacheState.page > 1) { cacheState.page--; renderCachePage(); } });
+            document.getElementById('cache-next')?.addEventListener('click', () => {
+                const maxPage = Math.max(1, Math.ceil(cacheState.filtered.length / cacheState.pageSize));
+                if (cacheState.page < maxPage) { cacheState.page++; renderCachePage(); }
+            });
+            document.getElementById('cache-select-all')?.addEventListener('change', (e) => {
+                const pageItems = getCurrentPageItems();
+                if (e.target.checked) pageItems.forEach(it => cacheState.selectedKeys.add(it.key));
+                else pageItems.forEach(it => cacheState.selectedKeys.delete(it.key));
+                renderCachePage();
+            });
+            document.getElementById('cache-delete-selected')?.addEventListener('click', async () => {
+                const keys = [...cacheState.selectedKeys];
+                if (keys.length === 0) return;
+                if (!confirm(`確定要刪除 ${keys.length} 筆快取？此操作不可回復。`)) return;
+                const res = await sendMessage({ action: 'deleteCachesByKeys', keys });
+                if (res?.success) {
+                    showOptionsToast(`已刪除 ${res.count} 筆快取`, 3000);
+                    cacheState.selectedKeys.clear();
+                    loadCacheList();
+                }
+            });
+
+            // 縮圖 modal
+            const modal = document.getElementById('cache-thumb-modal');
+            modal?.addEventListener('click', () => modal.classList.remove('show'));
+
+            loadCacheList();
+        }
+
+        async function loadCacheList() {
+            // 功能: 從 background 抓完整快取 metadata → 存入 cacheState → 套 filter → render
+            const summaryEl = document.getElementById('cache-summary');
+            if (summaryEl) summaryEl.textContent = '載入中...';
+            try {
+                const res = await sendMessage({ action: 'listCaches' });
+                if (!res?.success) throw new Error(res?.error || '未知錯誤');
+                cacheState.all = res.data || [];
+                cacheState.totalBytes = res.totalBytes || 0;
+                cacheState.selectedKeys.clear();
+                applyCacheFilters();
+            } catch (e) {
+                if (summaryEl) summaryEl.textContent = `載入失敗: ${e.message}`;
+            }
+        }
+
+        function applyCacheFilters() {
+            // 功能: 套用搜尋 + 天數過濾 + 排序 → 更新 cacheState.filtered → renderCachePage
+            const q = (document.getElementById('cache-search')?.value || '').trim().toLowerCase();
+            const daysStr = document.getElementById('cache-days-filter')?.value || '';
+            const days = daysStr ? parseInt(daysStr, 10) : null;
+            const sortMode = document.getElementById('cache-sort')?.value || 'newest';
+
+            let list = cacheState.all;
+            if (q) {
+                list = list.filter(it =>
+                    (it.videoTitle || '').toLowerCase().includes(q) ||
+                    (it.channelName || '').toLowerCase().includes(q) ||
+                    (it.videoId || '').toLowerCase().includes(q) ||
+                    (it.firstTwoOriginals || []).join(' ').toLowerCase().includes(q)
+                );
+            }
+            if (days !== null && !isNaN(days) && days > 0) {
+                const cutoff = Date.now() - days * 86400000;
+                list = list.filter(it => it.cachedAt && it.cachedAt < cutoff);
+            }
+            const sorters = {
+                newest: (a, b) => (b.cachedAt || 0) - (a.cachedAt || 0),
+                oldest: (a, b) => (a.cachedAt || 0) - (b.cachedAt || 0),
+                largest: (a, b) => b.sizeBytes - a.sizeBytes,
+                smallest: (a, b) => a.sizeBytes - b.sizeBytes,
+                title: (a, b) => (a.videoTitle || a.videoId).localeCompare(b.videoTitle || b.videoId)
+            };
+            list = [...list].sort(sorters[sortMode] || sorters.newest);
+            cacheState.filtered = list;
+            renderCachePage();
+        }
+
+        function getCurrentPageItems() {
+            const start = (cacheState.page - 1) * cacheState.pageSize;
+            return cacheState.filtered.slice(start, start + cacheState.pageSize);
+        }
+
+        function renderCachePage() {
+            // 功能: 渲染當前頁 + 摘要 + 分頁按鈕狀態
+            const container = document.getElementById('cache-list');
+            const summaryEl = document.getElementById('cache-summary');
+            const pageInfoEl = document.getElementById('cache-page-info');
+            const prevBtn = document.getElementById('cache-prev');
+            const nextBtn = document.getElementById('cache-next');
+            const selAllBox = document.getElementById('cache-select-all');
+            const delBtn = document.getElementById('cache-delete-selected');
+            if (!container) return;
+
+            const total = cacheState.all.length;
+            const shown = cacheState.filtered.length;
+            const totalMB = (cacheState.totalBytes / 1048576).toFixed(2);
+            if (summaryEl) summaryEl.textContent = `共 ${total} 部影片 (顯示 ${shown} 部) / 總計 ${totalMB} MB`;
+
+            if (shown === 0) {
+                container.innerHTML = `<div class="cache-empty">無符合條件的快取</div>`;
+            } else {
+                const items = getCurrentPageItems();
+                container.innerHTML = items.map(it => {
+                    const checked = cacheState.selectedKeys.has(it.key) ? 'checked' : '';
+                    const thumbUrl = `https://i.ytimg.com/vi/${escapeAttr(it.videoId)}/default.jpg`;
+                    const titleHtml = it.videoTitle
+                        ? `<div class="cache-title" title="${escapeAttr(it.videoTitle)}">${escapeHtml(it.videoTitle)}</div>`
+                        : (it.firstTwoOriginals?.length
+                            ? `<div class="cache-fallback-title" title="${escapeAttr(it.firstTwoOriginals.join(' / '))}">📝 ${escapeHtml(it.firstTwoOriginals.join(' / '))}</div>`
+                            : `<div class="cache-fallback-title">🆔 ${escapeHtml(it.videoId)}</div>`);
+                    const channel = it.channelName ? escapeHtml(it.channelName) : '(未知頻道)';
+                    const timeAgo = formatTimeAgo(it.cachedAt);
+                    const sizeStr = formatSize(it.sizeBytes);
+                    return `
+                        <div class="cache-item" data-key="${escapeAttr(it.key)}">
+                            <input type="checkbox" data-key="${escapeAttr(it.key)}" ${checked} />
+                            <img class="cache-thumb" loading="lazy" src="${thumbUrl}" alt="縮圖" data-video-id="${escapeAttr(it.videoId)}" />
+                            <div class="cache-info">
+                                ${titleHtml}
+                                <div class="cache-meta">${channel} · ${timeAgo} · ${sizeStr} · ${escapeHtml(it.videoId)}</div>
+                            </div>
+                            <button class="cache-delete-btn" data-key="${escapeAttr(it.key)}">刪除</button>
+                        </div>
+                    `;
+                }).join('');
+
+                // 縮圖點擊 → modal 放大
+                container.querySelectorAll('.cache-thumb').forEach(img => {
+                    img.addEventListener('click', () => {
+                        const vid = img.dataset.videoId;
+                        const modal = document.getElementById('cache-thumb-modal');
+                        const modalImg = document.getElementById('cache-thumb-modal-img');
+                        modalImg.src = `https://i.ytimg.com/vi/${vid}/maxresdefault.jpg`;
+                        modalImg.onerror = () => { modalImg.src = `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`; };
+                        modal.classList.add('show');
+                    });
+                });
+                // checkbox 勾選
+                container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                    cb.addEventListener('change', (e) => {
+                        const k = e.target.dataset.key;
+                        if (e.target.checked) cacheState.selectedKeys.add(k);
+                        else cacheState.selectedKeys.delete(k);
+                        updateDeleteSelectedBtn();
+                    });
+                });
+                // 個別刪除
+                container.querySelectorAll('.cache-delete-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const k = btn.dataset.key;
+                        if (!confirm('確定刪除此快取？')) return;
+                        const res = await sendMessage({ action: 'deleteCachesByKeys', keys: [k] });
+                        if (res?.success) {
+                            showOptionsToast('已刪除 1 筆快取', 2000);
+                            cacheState.selectedKeys.delete(k);
+                            loadCacheList();
+                        }
+                    });
+                });
+            }
+
+            const maxPage = Math.max(1, Math.ceil(shown / cacheState.pageSize));
+            if (cacheState.page > maxPage) cacheState.page = maxPage;
+            if (pageInfoEl) pageInfoEl.textContent = `第 ${cacheState.page} / ${maxPage} 頁`;
+            if (prevBtn) prevBtn.disabled = cacheState.page <= 1;
+            if (nextBtn) nextBtn.disabled = cacheState.page >= maxPage;
+
+            // 全選 checkbox 狀態: 當頁全部已勾則顯 checked
+            if (selAllBox) {
+                const pageItems = getCurrentPageItems();
+                selAllBox.checked = pageItems.length > 0 && pageItems.every(it => cacheState.selectedKeys.has(it.key));
+            }
+            updateDeleteSelectedBtn();
+        }
+
+        function updateDeleteSelectedBtn() {
+            const btn = document.getElementById('cache-delete-selected');
+            if (!btn) return;
+            const n = cacheState.selectedKeys.size;
+            btn.textContent = `刪除選取 (${n})`;
+            btn.disabled = n === 0;
+        }
+
+        function formatTimeAgo(ts) {
+            if (!ts) return '(無時間)';
+            const diff = Date.now() - ts;
+            const day = Math.floor(diff / 86400000);
+            if (day === 0) {
+                const hr = Math.floor(diff / 3600000);
+                if (hr === 0) return '剛剛';
+                return `${hr} 小時前`;
+            }
+            if (day < 30) return `${day} 天前`;
+            if (day < 365) return `${Math.floor(day / 30)} 個月前`;
+            return `${Math.floor(day / 365)} 年前`;
+        }
+
+        function formatSize(bytes) {
+            if (!bytes) return '0 B';
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / 1048576).toFixed(2)} MB`;
+        }
+
+        function escapeHtml(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        function escapeAttr(s) {
+            return String(s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
 
         // --- Tier 1: 原文顯示 (Badge/Token) 邏輯 ---
         function renderTier1Badges(langs = []) {

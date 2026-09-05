@@ -28,6 +28,8 @@
     * **TTL 365 天**：`CACHE_TTL_MS` 常數定義 365 天有效期，`getCache` 讀取時比對 `cachedAt` 欄位自動清除過期快取。
     * **語言鎖定 (sourceLang Lock)**：`setCache` 存入時附加 `sourceLang` 欄位；`getCache` 讀取時嚴格比對（向下相容：舊版無 `sourceLang` 欄位時允許載入），防止跨語言快取污染。
     * **自動清理 `purgeExpiredCache`**：`background.js` 提供清理過期快取項目的工具函式。
+    * **Metadata 附掛**：`content.js` 的 `setCache` wrapper 自動附加 `videoTitle` / `channelName` / `firstTwoOriginals`，供 options 頁「已快取影片清單」UI 顯示；舊快取 (無 metadata) 可透過 `backfillCacheMetadata` message 從 `translatedTrack` 前兩句補齊識別資訊。
+    * **管理 UI**：options「診斷與日誌」頁面提供快取清單卡片，支援搜尋 / 排序 / 天數過濾 / 分頁 / 縮圖 lazy load + 點擊放大 modal / 個別與批次刪除。Background 提供 `listCaches` / `deleteCachesByKeys` / `backfillCacheMetadata` 三個 message handlers 支援此 UI。
 
 ## 2. 系統架構與資訊流
 

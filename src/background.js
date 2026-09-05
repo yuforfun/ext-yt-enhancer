@@ -397,35 +397,90 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             });
             break;
             
-        case 'clearAllCache':
-            // 功能: 清除所有與此擴充功能相關的暫存和日誌資料。
-            // input from: popup.js (options.html) -> clearCacheButton 的點擊事件
-            // output to: popup.js (透過 sendResponse 確認完成)
-            // 其他補充: 現在會同時清除 local (影片暫存) 和 session (日誌)
+        case 'listCaches':
+            // 功能: 列出所有 yt-enhancer-cache-* 快取的 metadata (不含 translatedTrack 內容以減少傳輸)。
+            // input from: options 頁面「已快取影片」清單
+            // output: [{ key, videoId, videoTitle, channelName, firstTwoOriginals, cachedAt, sizeBytes }, ...] + totalBytes
             isAsync = true;
-            let clearedCount = 0;
-            chrome.storage.local.get(null, (items) => {
-                const cacheKeysToRemove = Object.keys(items).filter(key => key.startsWith('yt-enhancer-cache-'));
-                clearedCount = cacheKeysToRemove.length;
-                const localClearPromise = new Promise((resolve) => {
-                    if (cacheKeysToRemove.length > 0) {
-                        chrome.storage.local.remove(cacheKeysToRemove, resolve);
-                    } else {
-                        resolve();
+            (async () => {
+                try {
+                    const items = await chrome.storage.local.get(null);
+                    const list = [];
+                    let totalBytes = 0;
+                    for (const [key, val] of Object.entries(items)) {
+                        if (!key.startsWith('yt-enhancer-cache-')) continue;
+                        const sizeBytes = JSON.stringify(val).length;
+                        totalBytes += sizeBytes;
+                        list.push({
+                            key,
+                            videoId: key.replace('yt-enhancer-cache-', ''),
+                            videoTitle: val?.videoTitle || '',
+                            channelName: val?.channelName || '',
+                            firstTwoOriginals: val?.firstTwoOriginals || [],
+                            cachedAt: val?.cachedAt || 0,
+                            sizeBytes
+                        });
                     }
-                });
-                const sessionClearPromise = chrome.storage.session.remove('errorLogs');
+                    sendResponse({ success: true, data: list, totalBytes });
+                } catch (e) {
+                    console.error('[listCaches] 失敗:', e);
+                    sendResponse({ success: false, error: e.message });
+                }
+            })();
+            break;
 
-                Promise.all([localClearPromise, sessionClearPromise])
-                    .then(() => {
-                        // console.log(`[Background] 成功清除了 ${clearedCount} 個影片的暫存與所有日誌。`);
-                        sendResponse({ success: true, count: clearedCount });
-                    })
-                    .catch((e) => {
-                         console.error('[Background] 清除快取或日誌時發生錯誤:', e);
-                         sendResponse({ success: false });
-                    });
-            });
+        case 'backfillCacheMetadata':
+            // 功能: 掃所有 yt-enhancer-cache-* 快取，補齊沒有 firstTwoOriginals 的舊快取 (從 translatedTrack 前兩句取)
+            //       title / channel 拿不到 (無 playerResponse)，只補前兩句原文當識別 fallback
+            // output: { success, backfilledCount, totalCount }
+            isAsync = true;
+            (async () => {
+                try {
+                    const items = await chrome.storage.local.get(null);
+                    const updates = {};
+                    let backfilledCount = 0;
+                    let totalCount = 0;
+                    for (const [key, val] of Object.entries(items)) {
+                        if (!key.startsWith('yt-enhancer-cache-')) continue;
+                        totalCount++;
+                        if (val?.firstTwoOriginals && val.firstTwoOriginals.length > 0) continue;
+                        const track = val?.translatedTrack || [];
+                        if (track.length === 0) continue;
+                        const firstTwo = track.slice(0, 2)
+                            .map(t => (t?.originalText || '').slice(0, 40))
+                            .filter(Boolean);
+                        if (firstTwo.length === 0) continue;
+                        updates[key] = { ...val, firstTwoOriginals: firstTwo };
+                        backfilledCount++;
+                    }
+                    if (backfilledCount > 0) {
+                        await chrome.storage.local.set(updates);
+                    }
+                    sendResponse({ success: true, backfilledCount, totalCount });
+                } catch (e) {
+                    console.error('[backfillCacheMetadata] 失敗:', e);
+                    sendResponse({ success: false, error: e.message });
+                }
+            })();
+            break;
+
+        case 'deleteCachesByKeys':
+            // 功能: 批次刪除指定 keys 的快取
+            // input: keys (string[])
+            // output: { success, count }
+            isAsync = true;
+            (async () => {
+                try {
+                    const keys = (request.keys || []).filter(k => typeof k === 'string' && k.startsWith('yt-enhancer-cache-'));
+                    if (keys.length > 0) {
+                        await chrome.storage.local.remove(keys);
+                    }
+                    sendResponse({ success: true, count: keys.length });
+                } catch (e) {
+                    console.error('[deleteCachesByKeys] 失敗:', e);
+                    sendResponse({ success: false, error: e.message });
+                }
+            })();
             break;
 
         case 'purgeExpiredCache':
