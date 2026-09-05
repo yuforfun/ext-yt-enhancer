@@ -45,3 +45,7 @@ __tests__/
 node_modules/
 .claude/
 CLAUDE.md
+
+# 稽核腳本產物 (含 API Key、報告)
+tools/.env.local
+tools/reports/

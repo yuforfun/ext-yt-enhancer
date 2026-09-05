@@ -219,15 +219,18 @@ document.addEventListener('DOMContentLoaded', () => {
         // output: 渲染模型診斷表格到 modelOutputArea
         // 其他補充: 修復了多行輸入時只顯示第一句翻譯結果的漏洞。
         
+        // 模型清單來自 config/models.js (單一來源)，按 tier 排序並在 free/paid 之間插入分隔列
+        if (!globalThis.YT_ENHANCER_MODELS) {
+            setErrorState(modelOutputArea, 'config/models.js 未載入，無法取得模型清單。', runModelBtn, '開始測試所有模型');
+            return;
+        }
+        const _allModels = globalThis.YT_ENHANCER_MODELS.MODELS;
+        const _freeIds = _allModels.filter(m => m.tier === 'free').map(m => m.id);
+        const _paidIds = _allModels.filter(m => m.tier === 'paid').map(m => m.id);
         const MODELS_TO_TEST = [
-            "gemini-2.5-flash", //Gemini 2.5 Flash
-            "gemini-3.1-flash-lite", //Gemini 3.1 Flash Lite
-            "gemini-2.5-flash-lite", //Gemini 2.5 Flash Lite
-            "gemini-3-flash-preview", //Gemini 3 Flash
-            "以下需付費(5/28紀錄)", 
-            "gemini-2.5-pro", //Gemini 2.5 Pro
-            "gemini-3.5-flash", //Gemini 3.5 Flash
-            "gemini-3.1-pro-preview" //Gemini 3.1 Pro
+            ..._freeIds,
+            '以下需付費',
+            ..._paidIds
         ];
         
         runModelBtn.disabled = true;
@@ -241,11 +244,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const fullPrompt = `${customAEl.value}\n\n${universalAEl.value}`;
         
-        let resultsData = MODELS_TO_TEST.map(m => ({ model: m, status: '等待中...', time: '-', detail: '' }));
+        let resultsData = MODELS_TO_TEST.map(m => {
+            const isModel = /^gemini-/.test(m);
+            return { model: m, status: isModel ? '等待中...' : '', time: isModel ? '-' : '', detail: '' };
+        });
         renderModelTable(resultsData);
 
         for (let i = 0; i < MODELS_TO_TEST.length; i++) {
             const modelName = MODELS_TO_TEST[i];
+
+            // 非真實 model (如 tier 分隔列 '以下需付費')：只當視覺標題，跳過 API 呼叫
+            if (!/^gemini-/.test(modelName)) {
+                resultsData[i].status = '';
+                resultsData[i].time = '';
+                resultsData[i].detail = '';
+                renderModelTable(resultsData);
+                continue;
+            }
+
             resultsData[i].status = '<span style="color: blue;">測試中...</span>';
             renderModelTable(resultsData);
 

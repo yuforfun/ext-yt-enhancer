@@ -6,6 +6,8 @@
  */
 'use strict';
 
+// 載入模型清單單一來源 (IIFE 掛載到 globalThis.YT_ENHANCER_MODELS)
+import '../extension/config/models.js';
 import { GoogleGenAI } from '@google/genai';
 
 
@@ -162,12 +164,8 @@ const defaultSettings = {
     isEnabled: true,
     fontSize: 22,
     fontFamily: 'Microsoft JhengHei, sans-serif',
-    models_preference: [
-        "gemini-3.1-flash-lite",
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite"
-    ],
+    // models_preference 來自 extension/config/models.js (經 esbuild --inject 注入 globalThis.YT_ENHANCER_MODELS)
+    models_preference: globalThis.YT_ENHANCER_MODELS.DEFAULT_MODELS_PREFERENCE,
     showOriginal: true,
     showTranslated: true,
     native_langs: ['zh-Hant'],

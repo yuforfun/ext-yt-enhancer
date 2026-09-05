@@ -39,16 +39,11 @@ document.addEventListener('DOMContentLoaded', () => {
         { code: 'tr', name: '土耳其文', search: ['tr', 'turkish', '土耳其文', '土耳其語'] }
     ];
 
-    const ALL_MODELS = {
-        // 新增 3.5 系列
-        'gemini-2.5-flash': { name: '2.5 Flash', tip: '免費，每日 20 RPD' },
-        'gemini-3.1-flash-lite': { name: '3.1 Flash-Lite', tip: '免費，每日 500 RPD，輕量模型' },
-        'gemini-2.5-flash-lite': { name: '2.5 Flash-Lite', tip: '免費，每日 20 RPD，輕量模型' },
-        'gemini-3-flash-preview': { name: '3.0 Flash', tip: '免費，每日 20 RPD' },
-        'gemini-2.5-pro': { name: '2.5 Pro', tip: '需付費，高價位，穩定高品質主力，適合長句翻譯' },
-        'gemini-3.5-flash': { name: '3.5 Flash', tip: '需付費，中價位' },
-        'gemini-3.1-pro-preview': { name: '3.1 Pro', tip: '需付費，高價位，適合複雜推理' }
-    };
+    // 模型清單來自 config/models.js (單一來源)，如未載入則中止並提示。
+    if (!globalThis.YT_ENHANCER_MODELS) {
+        throw new Error('[popup.js] config/models.js 未載入，請確認 HTML 有 <script src="config/models.js"> 且置於 popup.js 之前。');
+    }
+    const ALL_MODELS = globalThis.YT_ENHANCER_MODELS.MODELS_DICT;
 
     const NEW_LANGUAGE_PROMPT_TEMPLATE = `**風格指南:**
 - 翻譯需符合台灣人的說話習慣，並保留說話者的情感語氣。
@@ -112,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     let settings = {};
 
-    // 功能: 獲取設定，並包含從 v1.x 版本升級的資料庫自動遷移邏輯。
+    // 功能: 獲取設定並套用預設值。
     async function loadSettings() {
         console.log('開始載入設定...');
         
@@ -124,60 +119,16 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         try {
-            // 一次性獲取所有 storage 資料，避免 get(['key']) 的不穩定
-            const allStorageData = await chrome.storage.local.get(null);
-            
-            let currentSettings = allStorageData.ytEnhancerSettings;
+            const result = await chrome.storage.local.get(['ytEnhancerSettings']);
+            let currentSettings = result.ytEnhancerSettings;
             if (!currentSettings) {
                 const response = await sendMessage({ action: 'getSettings' }); // Fallback
                 currentSettings = response.data || {};
             }
 
-            let needsSave = false; // 追蹤是否執行了遷移
-
-            // 資料庫遷移邏輯
-            if (currentSettings.preferred_langs) {
-                console.log('[Migration] 偵測到舊版設定 (preferred_langs)，正在執行資料庫遷移...');
-                if (isOptionsPage) { 
-                    showOptionsToast('偵測到舊版設定，正在升級資料庫...', 4000);
-                }
-
-                // 1. 從 allStorageData 中安全地獲取 userPrompts
-                const userPrompts = allStorageData.customPrompts; // 絕對讀取，如果不存在才是 undefined
-
-                // 2. 正確合併 Prompt (以 DEFAULT 為基底，用 userPrompts 覆蓋)
-                const mergedPrompts = { ...DEFAULT_CUSTOM_PROMPTS, ...userPrompts };
-                
-                // 3. 遷移 Tier 2 (自動翻譯列表)
-                currentSettings.auto_translate_priority_list = currentSettings.preferred_langs.map(lang => {
-                    const name = LANG_CODE_MAP[lang] || lang;
-                    // 4. 從合併後的物件中取值
-                    const customPrompt = mergedPrompts[lang] || NEW_LANGUAGE_PROMPT_TEMPLATE;
-                    
-                    return { langCode: lang, name: name, customPrompt: customPrompt };
-                });
-
-                // 5. 遷移 Tier 1 (原文顯示列表)
-                currentSettings.native_langs = currentSettings.ignored_langs || ['zh-Hant'];
-
-                // 6. 刪除舊屬性
-                delete currentSettings.preferred_langs;
-                delete currentSettings.ignored_langs;
-                
-                needsSave = true;
-
-                // 7. [關鍵] 刪除舊的頂層 customPrompts 儲存金鑰
-                await chrome.storage.local.remove('customPrompts');
-                console.log('[Migration] 舊的 customPrompts 鍵已移除。');
-            }
-
             settings = { ...minimumDefaults, ...currentSettings };
-            
-            if (needsSave) {
-                console.log('[Migration] 遷移完成，正在儲存新版本設定...');
-                await sendMessage({ action: 'updateSettings', data: settings });
-            }
-            
+
+
             if (isOptionsPage) {
                 renderTier1Badges(settings.native_langs || []);
                 renderTier2Accordions(settings.auto_translate_priority_list || []);
@@ -321,13 +272,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // 2. 渲染「可添加模型」標籤
+            // 2. 渲染「可添加模型」標籤 (hover 顯示 tip，加入前先看得到說明)
             Object.keys(ALL_MODELS).forEach(modelId => {
                 if (!preferredSet.has(modelId)) {
                     // 動態生成 "Available Pills"
                     const pill = document.createElement('button');
                     pill.className = 'add-model-pill';
                     pill.dataset.id = modelId;
+                    pill.title = ALL_MODELS[modelId].tip || '';
                     pill.textContent = `+ ${ALL_MODELS[modelId].name}`;
                     availablePillsContainer.appendChild(pill);
                 }

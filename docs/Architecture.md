@@ -193,9 +193,6 @@
 * **原因**：消除使用者對「付費」的恐懼。3.0 模型的速度與語意理解能力遠超 1.5 Flash，是目前 CP 值最佳的選擇。
 
 ### 歷史包袱 (Legacy Debt)
-* **[包袱] 資料庫遷移 (Migration)**：
-    * **描述**：`popup.js` 的 `loadSettings` 中包含將舊版 `preferred_langs` 轉換為新版 `auto_translate_priority_list` 的邏輯。
-    * **原因**：為了兼容從 v1.x 升級至 v2.0+ 的舊使用者，此邏輯**不可刪除**。
 * **[包袱] `DEFAULT_CUSTOM_PROMPTS` vs `EXAMPLE_CUSTOM_PROMPTS` 雙常數**：
     * **描述**：`DEFAULT_CUSTOM_PROMPTS` 已改為通用格式說明範本（無硬編碼藝人名稱）；另設 `EXAMPLE_CUSTOM_PROMPTS` 常數保留個人化範例，供 options UI「載入範例」功能使用（對應新增的 `getExamplePrompt` message handler）。
     * **影響**：修改預設 Prompt 格式時仍需同步確認 `background.js` 與 `popup.js` 的展示是否一致。
