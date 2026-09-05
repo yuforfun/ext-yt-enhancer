@@ -1,4 +1,4 @@
-# YouTube 翻譯增強工具 (Ext-YT-Enhancer) - 專案情境總結 (v4.2.2)
+# YouTube 翻譯增強工具 (Ext-YT-Enhancer) - 專案情境總結 (v4.3.0)
 
 ## 1. 專案目標與核心功能
 
@@ -65,7 +65,7 @@
         1.  `content.js` 累積 **25 句** 字幕，呼叫 `translateBatch`。
         2.  `background.js` 收到請求，呼叫 `globalCircuitBreaker.ensureLoaded()` 確保斷路器狀態從 session storage 同步完畢（消除 Service Worker 重啟後的競態窗口）。
         3.  從 `_clientCache` 取得（或建立）`GoogleGenAI` client 實例；以 `_lastSuccessfulKeyIdCache` 重排 Keys 優先序。
-        4.  **外層迴圈 (Model)**：依序嘗試 `Gemini 3.0 Pro` -> `Gemini 2.5 Pro` -> `Gemini 2.5 Flash`...
+        4.  **外層迴圈 (Model)**：依 `settings.models_preference` 陣列順序嘗試（實際清單以 `extension/config/models.js` 為準，可從 options 頁面拖曳排序）。
         5.  **內層迴圈 (Key)**：
             * 檢查 `CircuitBreaker.isOpen(Key, Model)`。若冷卻中則跳過 (Local Skip)。
             * 若可用，發送 API 請求。
@@ -86,13 +86,25 @@
 ## 3. 專案檔案結構與職責
 
 * **後端邏輯 (Backend Context)**：
-* `src/background.js`: **[唯一真理]** 開發與邏輯修改處。負責 SDK 初始化、Batch 處理、錯誤判刑。
+* `src/background.js`: **[唯一真理]** 開發與邏輯修改處。負責 SDK 初始化、Batch 處理、錯誤判刑。啟動時 `import '../extension/config/models.js'`，esbuild 會把 config 一起 bundle。
 * `extension/background.js`: **[唯讀產物]** 由 `npm run build` 生成。**嚴禁手動修改**。
 
 
 * **前端腳本 (Frontend Script)**：
 * `extension/content.js`: 負責 DOM 操作、字幕樣式渲染、Orb 狀態顯示。**嚴禁包含任何 API 金鑰邏輯**。
 * `extension/injector.js`: 負責將攔截器注入 YouTube 頁面環境。
+
+
+* **模型清單與設定**：
+* `extension/config/models.js`: **[單一真理]** Gemini 模型清單來源，掛載到 `globalThis.YT_ENHANCER_MODELS`；popup / lab / options / background 四處共用。
+    * 加/減/改模型必須在此檔完成，禁止在其他檔案硬寫 model ID。
+    * popup.html / lab.html / options.html 皆以 `<script src="config/models.js">` 在自身 script 前載入；background 透過 esbuild inject 拿到同一份資料。
+
+
+* **稽核工具 (Tools)**：
+* `tools/audit-models.mjs`: 本地稽核腳本。Paid key 呼叫 ListModels 取完整清單 → Free key 全測 → Paid 補測 Free 失敗的；比對 API vs `config/models.js` 差異，異動時透過 LINE Messaging API 推送摘要。
+* `tools/audit-models.ps1`: Windows 工作排程器包裝腳本。
+* `tools/.env.local`: **[Gitignore]** 存放兩把 Gemini API key 與 LINE token；範本見 `.env.local.example`。
 
 
 * **配置與靜態資源**：
@@ -188,9 +200,9 @@
 * **原因**：單純的重試 (Retry) 會導致 API Key 被 Google 判定為濫用。我們選擇「主動冷卻」，在本地端攔截請求，保護使用者的 API Key 信譽。
 
 
-* **[體驗] 預設 Gemini 3.0 Flash 與成本透明化**
-* **決策**：將最新模型設為預設，並在 UI 顯示實測價格 (每百句約 NT$0.02)。
-* **原因**：消除使用者對「付費」的恐懼。3.0 模型的速度與語意理解能力遠超 1.5 Flash，是目前 CP 值最佳的選擇。
+* **[架構] 模型清單集中化 + 本地稽核**
+* **決策**：Gemini 模型清單集中到 `extension/config/models.js` 單一來源；`tools/audit-models.mjs` 每週跑一次比對 Google 實際 API 與 config 的漂移。
+* **原因**：Gemini 版本更新頻繁 (數月即出新 flash 世代)，原本模型 ID 散落 popup / lab / background 三處，維護痛點大；付費 key 不上雲，稽核腳本純本地執行，透過 LINE 推送摘要通知模型異動。
 
 ### 歷史包袱 (Legacy Debt)
 * **[包袱] `DEFAULT_CUSTOM_PROMPTS` vs `EXAMPLE_CUSTOM_PROMPTS` 雙常數**：
@@ -225,6 +237,9 @@
 
 ### [UI 與其他] Popup & Options
 * **[禁止]**：**嚴格禁止**在 `popup.js` 中直接存取只存在於 `options.html` 的 DOM 元素 (例如 `apiKeyList`)。存取前**必須**使用 `if (isOptionsPage)` 或 `if (element)` 進行嚴格檢查，否則會導致 `popup.html` (小彈窗) 崩潰。
+
+### [設定] 模型清單來源
+* **[禁止]**：**嚴格禁止**在 `popup.js` / `lab.js` / `src/background.js` 或任何其他檔案硬寫 Gemini 模型 ID (如 `'gemini-2.5-flash'` 字面量)。所有模型清單、tier、tip、預設偏好順序**必須**透過 `globalThis.YT_ENHANCER_MODELS` 讀取 `extension/config/models.js` 單一來源。違反此規則將回到集中化前「模型散落三處難維護」的原始痛點。
 
 * **[禁止] 直接修改 `extension/background.js` (No Direct Edit on Artifacts)**
 * **內容**：**絕對禁止**在 `extension/background.js` 進行任何邏輯修改。
